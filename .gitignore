@@ -1,0 +1,19 @@
+# Erlang build output
+lora_mesh/_build/
+lora_mesh/rebar.lock
+lora_mesh/erl_crash.dump
+# generated from lora_mesh/proto/ on every build
+lora_mesh/src/meshtastic_pb.erl
+lora_mesh/include/meshtastic_pb.hrl
+
+# Python
+lora_mesh_client/.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# editors and Windows
+*~
+.#*
+Thumbs.db
+desktop.ini

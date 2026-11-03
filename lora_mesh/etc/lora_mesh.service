@@ -1,0 +1,23 @@
+# systemd unit for a lora_mesh release unpacked in /opt/lora_mesh.
+#   sudo cp etc/lora_mesh.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lora_mesh
+#   journalctl -u lora_mesh -f        # logs
+[Unit]
+Description=lora_mesh (Meshtastic bridges, router and registry)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lora_mesh
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/lora_mesh
+Environment=HOME=/opt/lora_mesh
+ExecStart=/opt/lora_mesh/bin/lora_mesh foreground
+ExecStop=/opt/lora_mesh/bin/lora_mesh stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

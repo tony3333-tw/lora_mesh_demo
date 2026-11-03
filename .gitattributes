@@ -1,0 +1,6 @@
+# Keep Unix line endings in the repository and on checkout, even on Windows:
+# the shell script and the Erlang/Python code run on Linux (the Pi).
+* text=auto eol=lf
+*.sh text eol=lf
+*.png binary
+*.xlsx binary

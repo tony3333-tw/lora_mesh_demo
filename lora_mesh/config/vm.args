@@ -1,0 +1,5 @@
+## Erlang node name and cookie. Needed by bin/lora_mesh (ping, stop,
+## remote_console) and by clusters of lora_mesh machines (role bridge).
+## Change the cookie before joining machines together.
+-sname lora_mesh
+-setcookie lora_mesh_change_me
