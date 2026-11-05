@@ -85,12 +85,19 @@ node_info(_Bridge, #node_info{num = Num} = Info) ->
 
 %% Like lorawan_gw_forwarder:parse_rxpk/1: radio data out of the packet.
 -spec rxq(#mesh_packet{}) -> #mesh_rxq{}.
+%% relay_node (firmware 2.6+): the last byte of the node that rebroadcast
+%% the packet last.
 rxq(#mesh_packet{} = P) ->
+    Hops = hops(P#mesh_packet.hop_start, P#mesh_packet.hop_limit),
     #mesh_rxq{rx_snr = P#mesh_packet.rx_snr,
               rx_rssi = P#mesh_packet.rx_rssi,
               hop_start = P#mesh_packet.hop_start,
               hop_limit = P#mesh_packet.hop_limit,
-              via_mqtt = P#mesh_packet.via_mqtt}.
+              via_mqtt = P#mesh_packet.via_mqtt,
+              relay = lora_mesh_path:meshtastic_relay(P#mesh_packet.relay_node, Hops)}.
+
+hops(Start, Limit) when is_integer(Start), is_integer(Limit) -> Start - Limit;
+hops(_Start, _Limit) -> 0.
 
 %%====================================================================
 %% By port

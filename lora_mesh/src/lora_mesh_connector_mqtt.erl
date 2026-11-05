@@ -151,10 +151,10 @@ credentials(_) ->
 %% #mesh_rx{} -> JSON, nested #mesh_rxq{} as an object
 encode_rx(#mesh_rx{rxq = RxQ} = Rx) ->
     Map = ?to_map(mesh_rx, Rx),
-    json(Map#{rxq := ?to_map(mesh_rxq, RxQ)}).
+    json(Map#{rxq := rxq_map(RxQ)}).
 
 %% #mesh_node{} -> JSON, nested records as objects, bridges as keys
-encode_node(#mesh_node{position = Pos, heard_by = HeardBy} = Node) ->
+encode_node(#mesh_node{position = Pos, heard_by = HeardBy, routes = Routes} = Node) ->
     Map = ?to_map(mesh_node, Node),
     json(Map#{position := case Pos of
                               undefined -> undefined;
@@ -162,10 +162,17 @@ encode_node(#mesh_node{position = Pos, heard_by = HeardBy} = Node) ->
                           end,
               heard_by := maps:map(
                             fun(_Bridge, #mesh_heard{rxq = RxQ, at = At}) ->
-                                    #{rxq => ?to_map(mesh_rxq, RxQ),
+                                    #{rxq => rxq_map(RxQ),
                                       at => At}
                             end,
-                            HeardBy)}).
+                            HeardBy),
+              routes := maps:map(fun(_Bridge, Route) -> lora_mesh_path:fill(meshcore, Route) end,
+                                 Routes)}).
+
+%% path and relay with the repeater and router names known by now
+rxq_map(#mesh_rxq{path = Path, relay = Relay} = RxQ) ->
+    ?to_map(mesh_rxq, RxQ#mesh_rxq{path = lora_mesh_path:fill(meshcore, Path),
+                                   relay = lora_mesh_path:fill(meshtastic, Relay)}).
 
 json(Term) ->
     iolist_to_binary(json:encode(nulls(Term))).

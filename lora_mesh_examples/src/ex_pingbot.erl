@@ -2,11 +2,12 @@
 %% Answer "ping" on a channel, like serial_pingbot.py:
 %%
 %%   Bob on #0: ping?
-%%   me  on #0: @[Bob] Pong 🏓(1 hops, field)
+%%   me  on #0: @[Bob] Pong 🏓(Ridge, heard by field)
 %%
 %% serial_pingbot.py reads the repeaters on the path from the radio's
-%% RX log. lora_mesh 0.3 publishes the hop count and which bridges heard
-%% the message, so the path shows those instead.
+%% RX log. lora_mesh 0.3.2 does that for every bridge and publishes the
+%% path with the repeaters' names (lmc:path_info/1); a Meshtastic ping
+%% shows its last relay.
 %%
 %%   lme pingbot                 channel 0
 %%   lme pingbot --channel 1

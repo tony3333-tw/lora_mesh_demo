@@ -44,9 +44,27 @@
       (io:format "~ts: battery ~ts -> ~ts~n" (list name (battery old) (battery new))))
     (if (=/= (maps:get #"position" old) (maps:get #"position" new))
       (io:format "~ts: position ~ts~n" (list name (position new))))
+    (routes name
+            (maps:get #"routes" old #m())
+            (maps:get #"routes" new #m()))
     (heard name
            (maps:get #"heard_by" old #m())
            (maps:get #"heard_by" new #m()))))
+
+;; a bridge's radio learned (or lost) its route to the node
+(defun routes (name old-routes new-routes)
+  (maps:foreach
+   (lambda (bridge route)
+     (if (=/= (maps:get bridge old-routes 'none) route)
+       (io:format "~ts: route from ~ts now ~ts~n"
+                  (list name bridge (lmc:route route)))))
+   new-routes)
+  (lists:foreach
+   (lambda (bridge)
+     (if (not (maps:is_key bridge new-routes))
+       (io:format "~ts: route from ~ts forgotten (it floods)~n"
+                  (list name bridge))))
+   (maps:keys old-routes)))
 
 ;; a bridge that heard the node again (its "at" moved on)
 (defun heard (name old-heard new-heard)
@@ -55,12 +73,11 @@
      (let ((at (maps:get #"at" heard))
            (rxq (maps:get #"rxq" heard)))
        (if (=/= (maps:get #"at" (maps:get bridge old-heard #m()) 'none) at)
-         (io:format "~ts: heard by ~ts (SNR ~.1f, ~p hops)~n"
+         (io:format "~ts: heard by ~ts (SNR ~.1f, ~ts)~n"
                     (list name
                           bridge
                           (float (maps:get #"rx_snr" rxq))
-                          (- (maps:get #"hop_start" rxq)
-                             (maps:get #"hop_limit" rxq)))))))
+                          (lmc:path_text (map #"rxq" rxq)))))))
    new-heard))
 
 (defun id (node)

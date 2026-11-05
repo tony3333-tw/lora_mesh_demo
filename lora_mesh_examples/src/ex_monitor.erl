@@ -4,7 +4,8 @@
 %%
 %%   new node @e1e2e3e4e5e6 Dave (chat)
 %%   Hill top: battery 81% -> 79%
-%%   Bob: heard by barn (SNR 8.0, 0 hops)
+%%   Bob: heard by barn (SNR 8.0, direct)
+%%   Pump: route from field now Ridge > 77?
 %%
 %% serial_battery_monitor.py asks the radio for its own battery every
 %% 10 s; lora_mesh 0.3 has no such command. It does publish the battery
@@ -54,6 +55,7 @@ changes(Old, New) ->
      || battery(Old) =/= battery(New)],
     [io:format("~ts: position ~ts~n", [Name, position(New)])
      || maps:get(<<"position">>, Old) =/= maps:get(<<"position">>, New)],
+    routes(Name, maps:get(<<"routes">>, Old, #{}), maps:get(<<"routes">>, New, #{})),
     OldHeard = maps:get(<<"heard_by">>, Old, #{}),
     maps:foreach(
       fun(Bridge, #{<<"at">> := At, <<"rxq">> := RxQ}) ->
@@ -61,12 +63,29 @@ changes(Old, New) ->
                   #{<<"at">> := At} ->
                       ok;
                   _ ->
-                      io:format("~ts: heard by ~ts (SNR ~.1f, ~p hops)~n",
+                      io:format("~ts: heard by ~ts (SNR ~.1f, ~ts)~n",
                                 [Name, Bridge, float(maps:get(<<"rx_snr">>, RxQ)),
-                                 maps:get(<<"hop_start">>, RxQ) - maps:get(<<"hop_limit">>, RxQ)])
+                                 lmc:path_text(#{<<"rxq">> => RxQ})])
               end
       end,
       maps:get(<<"heard_by">>, New, #{})).
+
+%% a bridge's radio learned (or lost) its route to the node
+routes(Name, Old, New) ->
+    maps:foreach(
+      fun(Bridge, Route) ->
+              case maps:get(Bridge, Old, none) of
+                  Route ->
+                      ok;
+                  _ ->
+                      io:format("~ts: route from ~ts now ~ts~n",
+                                [Name, Bridge, lmc:route(Route)])
+              end
+      end,
+      New),
+    [io:format("~ts: route from ~ts forgotten (it floods)~n", [Name, Bridge])
+     || Bridge <- maps:keys(Old), not is_map_key(Bridge, New)],
+    ok.
 
 id(Node) -> maps:get(<<"id">>, Node).
 

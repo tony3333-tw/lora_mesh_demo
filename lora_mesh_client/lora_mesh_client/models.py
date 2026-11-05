@@ -57,6 +57,34 @@ def _time(seconds: Optional[int]) -> Optional[datetime]:
 
 
 @dataclass(frozen=True)
+class Hop:
+    """A repeater (MeshCore) or router (Meshtastic) on a path (lora_mesh 0.3.2+).
+
+    Radios name it by a short hash: the first byte(s) of a MeshCore public
+    key, the last byte of a Meshtastic node number. lora_mesh fills in the
+    name when exactly one known node matches.
+    """
+
+    hash: str
+    name: Optional[str] = None
+
+    def __str__(self) -> str:
+        return self.name or f"{self.hash}?"
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any] | None) -> Optional["Hop"]:
+        if not data:
+            return None
+        return cls(hash=data.get("hash") or "?", name=data.get("name"))
+
+
+def _hops(data: Any) -> Optional[tuple[Hop, ...]]:
+    if data is None:
+        return None
+    return tuple(h for h in (Hop.from_json(d) for d in data) if h is not None)
+
+
+@dataclass(frozen=True)
 class Reception:
     """Radio data of one reception (lora_mesh #mesh_rxq{})."""
 
@@ -65,11 +93,25 @@ class Reception:
     hop_start: int = 0
     hop_limit: int = 0
     via_mqtt: bool = False
+    # MeshCore: every repeater, first one first; () = heard straight from
+    # the sender; None = not known (e.g. a direct-routed message)
+    path: Optional[tuple[Hop, ...]] = None
+    # Meshtastic: the last node that rebroadcast it (the only one known)
+    relay: Optional[Hop] = None
 
     @property
     def hops(self) -> int:
         """How many times the packet was relayed before it was heard."""
         return max(self.hop_start - self.hop_limit, 0)
+
+    @property
+    def path_text(self) -> str:
+        """'direct', 'Ridge > 77?', 'last relay Tower', or '1 hops'."""
+        if self.path is not None:
+            return " > ".join(map(str, self.path)) if self.path else "direct"
+        if self.relay is not None:
+            return f"last relay {self.relay}"
+        return "direct" if self.hops == 0 else f"{self.hops} hops"
 
     @classmethod
     def from_json(cls, data: dict[str, Any] | None) -> "Reception":
@@ -80,6 +122,8 @@ class Reception:
             hop_start=int(data.get("hop_start") or 0),
             hop_limit=int(data.get("hop_limit") or 0),
             via_mqtt=bool(data.get("via_mqtt")),
+            path=_hops(data.get("path")),
+            relay=Hop.from_json(data.get("relay")),
         )
 
 
@@ -167,6 +211,9 @@ class Node:
     voltage: Optional[float] = None
     last_heard: Optional[datetime] = None
     heard_by: dict[str, Heard] = field(default_factory=dict)
+    # MeshCore: the route each bridge's radio uses to reach this node,
+    # first hop first (() = in radio range); no entry = no route, it floods
+    routes: dict[str, tuple[Hop, ...]] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
@@ -202,4 +249,5 @@ class Node:
             voltage=data.get("voltage"),
             last_heard=_time(data.get("last_heard")),
             heard_by=heard,
+            routes={bridge: _hops(r) or () for bridge, r in (data.get("routes") or {}).items()},
         )

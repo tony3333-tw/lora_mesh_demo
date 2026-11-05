@@ -8,12 +8,22 @@
 %%
 
 %% Like lorawan-server's #rxq{}: radio metadata of one received packet.
+%%
+%% A hop is #{hash => <<"d1">>, name => <<"Ridge">> | undefined}
+%% (lora_mesh_path). path and relay say who passed the packet on:
+%%   path   MeshCore: every repeater, first one first ([] = heard straight
+%%          from the sender; undefined = not known, e.g. a direct-routed
+%%          message, whose packet carries no path on arrival)
+%%   relay  Meshtastic: the last node that rebroadcast it (the radio does
+%%          not record the others); undefined if not relayed or not known
 -record(mesh_rxq, {
     rx_snr = 0.0       :: number(),
     rx_rssi = 0        :: integer(),
     hop_start = 0      :: non_neg_integer(),
     hop_limit = 0      :: non_neg_integer(),
-    via_mqtt = false   :: boolean()}).
+    via_mqtt = false   :: boolean(),
+    path               :: [map()] | undefined,
+    relay              :: map() | undefined}).
 
 %% Like lorawan-server's #frame{}: one decoded text message from the mesh.
 %%
@@ -57,7 +67,11 @@
     battery_level           :: non_neg_integer() | undefined,   % percent, 101 = powered
     voltage                 :: float() | undefined,
     last_heard              :: integer() | undefined,           % unix seconds
-    heard_by = #{}          :: #{atom() => #mesh_heard{}}}).
+    heard_by = #{}          :: #{atom() => #mesh_heard{}},
+    %% MeshCore: the route each bridge's radio uses to reach this node,
+    %% first hop first ([] = in radio range). A bridge with no route
+    %% (it floods) has no entry.
+    routes = #{}            :: #{atom() => [map()]}}).
 
 %% Like lorawan-server's #txdata{}: one text message to send into the mesh.
 -record(mesh_tx, {

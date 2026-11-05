@@ -14,6 +14,9 @@
 -define(BOB, <<16#b1, 16#b2, 16#b3, 16#b4, 16#b5, 16#b6, 1:(26 * 8)>>).
 -define(CAROL, <<16#c1, 16#c2, 16#c3, 16#c4, 16#c5, 16#c6, 2:(26 * 8)>>).
 -define(SELF, <<16#5e, 16#1f, 16#00, 16#00, 16#00, 16#01, 3:(26 * 8)>>).
+-define(RIDGE, <<16#d1, 16#d2, 16#d3, 16#d4, 16#d5, 16#d6, 4:(26 * 8)>>).
+-define(ROOM, <<16#e1, 16#e2, 16#e3, 16#e4, 16#e5, 16#e6, 5:(26 * 8)>>).
+-define(TWIN, <<16#e1, 16#99, 16#99, 16#99, 16#99, 16#99, 6:(26 * 8)>>).
 
 -define(ALICE_NUM, (1 bsl 48 + 16#a1a2a3a4a5a6)).
 -define(BOB_NUM, (1 bsl 48 + 16#b1b2b3b4b5b6)).
@@ -69,6 +72,9 @@ responses_test_() ->
      ?_assertMatch({channel_msg, #{channel := 1, snr := 4.0, sender_name := <<"Bob">>,
                                    text := <<"a: b">>}},
                    ?CODEC:response(<<17, 16, 0, 0, 1, 0, 0, 1:32/little, "Bob: a: b">>)),
+     %% LOG_RX_DATA: SNR * 4, RSSI, raw packet
+     ?_assertEqual({rx_log, #{snr => -5.0, rssi => -97, raw => <<1, 2, 3>>}},
+                   ?CODEC:response(<<16#88, -20:8/signed, -97:8/signed, 1, 2, 3>>)),
      ?_assertEqual(2, ?CODEC:hops(2)),
      ?_assertEqual(2, ?CODEC:hops(16#42)),      % 2-byte hashes, 2 hops
      ?_assertEqual(direct, ?CODEC:hops(16#ff))].
@@ -95,6 +101,109 @@ parse_tx_test_() ->
 %%====================================================================
 %% One bridge over TCP
 %%====================================================================
+
+packet_test_() ->
+    %% flood TXT_MSG (type 2, route 1): path d1, 77; dest 5e, src a1
+    TxtMsg = <<(2 bsl 2 bor 1), 2, 16#d1, 16#77, 16#5e, 16#a1, "mac+cipher">>,
+    %% transport flood GRP_TXT (type 5, route 0): 4 code bytes, then path
+    GrpTxt = <<(5 bsl 2), 1, 2, 3, 4, 1, 16#d1, 16#4c, "mac+cipher">>,
+    %% 2-byte hashes: path_len 0x42 = two hashes of 2 bytes
+    Wide = <<(2 bsl 2 bor 1), 16#42, 16#d1, 16#d2, 16#77, 16#78, 16#5e, 16#a1, "x">>,
+    [?_assertEqual({ok, #{route => flood, type => txt_msg, path_len => 2,
+                          path => [<<16#d1>>, <<16#77>>], dest_hash => 16#5e, src_hash => 16#a1}},
+                   ?CODEC:packet(TxtMsg)),
+     ?_assertEqual({ok, #{route => flood, type => grp_txt, path_len => 1,
+                          path => [<<16#d1>>], channel_hash => 16#4c}},
+                   ?CODEC:packet(GrpTxt)),
+     ?_assertMatch({ok, #{path := [<<16#d1, 16#d2>>, <<16#77, 16#78>>]}}, ?CODEC:packet(Wide)),
+     ?_assertEqual(error, ?CODEC:packet(<<(2 bsl 2 bor 1), 5, 16#d1>>)),   % path cut short
+     ?_assertEqual(undefined, ?CODEC:path_hashes(16#ff, <<>>)),
+     ?_assertEqual([], ?CODEC:path_hashes(0, <<0:64/unit:8>>)),
+     %% a contact's stored route
+     ?_assertMatch({contact, #{out_path := [<<16#d1>>, <<16#77>>]}},
+                   ?CODEC:response(<<3, ?ALICE/binary, 1, 0, 2, 16#d1, 16#77, 0:62/unit:8,
+                                     "Alice", 0:27/unit:8, 0:128>>)),
+     ?_assertMatch({contact, #{out_path := undefined}},
+                   ?CODEC:response(<<3, ?ALICE/binary, 1, 0, 16#ff, 0:64/unit:8,
+                                     "Alice", 0:27/unit:8, 0:128>>))].
+
+%% Messages carry the repeaters they passed, contacts the route to them.
+paths_test_() ->
+    {timeout, 30, fun paths/0}.
+
+paths() ->
+    Server = start_server(),
+    Contacts = [lora_mesh_fake_companion:contact(?RIDGE, <<"Ridge">>,
+                                                 #{type => 2, out_path => [], lastmod => 1}),
+                lora_mesh_fake_companion:contact(?ROOM, <<"Club room">>,
+                                                 #{type => 3, lastmod => 2}),
+                lora_mesh_fake_companion:contact(?TWIN, <<"Twin">>, #{lastmod => 3}),
+                lora_mesh_fake_companion:contact(?ALICE, <<"Alice">>,
+                                                 #{out_path => [<<16#d1>>, <<16#e1>>],
+                                                   lastmod => 4}),
+                lora_mesh_fake_companion:contact(?BOB, <<"Bob">>, #{lastmod => 5})],
+    {ok, Fake} = lora_mesh_fake_companion:start(#{name => <<"Field gw">>,
+                                                  pub_key => ?SELF,
+                                                  contacts => Contacts}),
+    {ok, Port} = lora_mesh_fake_companion:port(Fake),
+    {ok, Bridge} = lora_mesh_meshcore:start_link(#{id => field,
+                                                   transport => tcp,
+                                                   host => "127.0.0.1",
+                                                   port => Port}),
+
+    %% routes, per bridge: Ridge in range, Alice via Ridge and e1, Bob unknown
+    wait_node(?BOB_NUM, fun(N) -> N#mesh_node.long_name =:= <<"Bob">> end),
+    {ok, Ridge} = lora_mesh_registry:lookup(1 bsl 48 + 16#d1d2d3d4d5d6),
+    ?assertEqual(#{field => []}, Ridge#mesh_node.routes),
+    {ok, Alice} = lora_mesh_registry:lookup(?ALICE_NUM),
+    ?assertMatch(#{field := [#{hash := <<"d1">>}, #{hash := <<"e1">>}]}, Alice#mesh_node.routes),
+    {ok, Bob} = lora_mesh_registry:lookup(?BOB_NUM),
+    ?assertEqual(#{}, Bob#mesh_node.routes),
+    %% names, now that every contact is known; e1 is Club room (a room
+    %% server relays) rather than Twin (a companion)
+    ?assertEqual([#{hash => <<"d1">>, name => <<"Ridge">>},
+                  #{hash => <<"e1">>, name => <<"Club room">>},
+                  #{hash => <<"77">>, name => undefined}],
+                 lora_mesh_path:meshcore([<<16#d1>>, <<16#e1>>, <<16#77>>])),
+    ?assertEqual([#{hash => <<"d1">>, name => <<"Ridge">>}, #{hash => <<"e1">>, name => <<"Club room">>}],
+                 lora_mesh_path:fill(meshcore, maps:get(field, Alice#mesh_node.routes))),
+
+    %% a DM flooded via Ridge and an unknown repeater; heard again later
+    %% via a third repeater (a copy the radio drops)
+    ok = lora_mesh_fake_companion:receive_dm(Fake, ?ALICE, <<"one">>,
+                                             #{path => [<<16#d1>>, <<16#77>>],
+                                               later_copies => [[<<16#d1>>, <<16#77>>, <<16#88>>]],
+                                               sender_time => 500}),
+    ?assertMatch(#mesh_rx{text = <<"one">>,
+                          rxq = #mesh_rxq{hop_start = 2,
+                                          path = [#{hash := <<"d1">>, name := <<"Ridge">>},
+                                                  #{hash := <<"77">>, name := undefined}]}},
+                 uplink()),
+    %% the next DM finds its own entry, not the late copy of the first
+    ok = lora_mesh_fake_companion:receive_dm(Fake, ?ALICE, <<"two">>,
+                                             #{path => [<<16#e1>>], sender_time => 501}),
+    ?assertMatch(#mesh_rx{text = <<"two">>,
+                          rxq = #mesh_rxq{path = [#{hash := <<"e1">>, name := <<"Club room">>}]}},
+                 uplink()),
+    %% heard straight from Bob: an empty path, no log needed
+    ok = lora_mesh_fake_companion:receive_dm(Fake, ?BOB, <<"near">>, #{path_len => 0}),
+    ?assertMatch(#mesh_rx{rxq = #mesh_rxq{path = []}}, uplink()),
+    %% a direct-routed DM: no path on arrival
+    ok = lora_mesh_fake_companion:receive_dm(Fake, ?BOB, <<"routed">>, #{path_len => 16#ff}),
+    ?assertMatch(#mesh_rx{rxq = #mesh_rxq{path = undefined}}, uplink()),
+    %% flooded, but the radio logged nothing: hops known, path not
+    ok = lora_mesh_fake_companion:receive_dm(Fake, ?BOB, <<"no log">>, #{path_len => 3}),
+    ?assertMatch(#mesh_rx{rxq = #mesh_rxq{hop_start = 3, path = undefined}}, uplink()),
+    %% a channel message via Ridge
+    ok = lora_mesh_fake_companion:receive_channel(Fake, 0, <<"Bob">>, <<"rain">>,
+                                                  #{path => [<<16#d1>>], sender_time => 502}),
+    ?assertMatch(#mesh_rx{sender_name = <<"Bob">>,
+                          rxq = #mesh_rxq{path = [#{name := <<"Ridge">>}]}},
+                 uplink()),
+
+    lora_mesh_fake_node:stop([Bridge]),
+    lora_mesh_fake_companion:stop(Fake),
+    stop_server(Server).
 
 tcp_bridge_test_() ->
     {timeout, 30, fun tcp_bridge/0}.

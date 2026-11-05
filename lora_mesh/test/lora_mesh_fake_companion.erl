@@ -21,6 +21,13 @@
 %% onChannelMessageRecv); hear_advert/3 pushes NEW_ADVERT or ADVERT
 %% (onDiscoveredContact); confirm/2 pushes SEND_CONFIRMED (processAck).
 %%
+%% Paths: a message given `path' (repeater hashes, first one first) is
+%% flooded: the radio first pushes LOG_RX_DATA with the raw packet
+%% (Dispatcher::checkRecv -> logRxRaw, Packet::writeTo), then the message.
+%% `later_copies' are the same packet heard again via longer paths, logged
+%% after the message, as the real radio does with copies it drops. A
+%% contact's `out_path' is its stored route (ContactInfo.out_path).
+%%
 -module(lora_mesh_fake_companion).
 -behaviour(gen_server).
 
@@ -43,6 +50,9 @@
 -define(MAX_FRAME_SIZE, 176).
 -define(OUT_PATH_UNKNOWN, 16#FF).
 -define(ADV_TYPE_CHAT, 1).
+-define(ROUTE_TYPE_FLOOD, 1).
+-define(PAYLOAD_TYPE_TXT_MSG, 2).
+-define(PAYLOAD_TYPE_GRP_TXT, 5).
 
 -record(state, {
     name            :: binary(),
@@ -72,21 +82,28 @@ port(Fake) ->
     gen_server:call(Fake, port).
 
 %% A contact as the companion keeps it (ContactInfo).
+%% Opts may give out_path => [<<Hash>>] (1-byte hashes; [] = neighbour).
 contact(PubKey, Name, Opts) ->
+    Route = case Opts of
+                #{out_path := Path} -> #{out_path_len => length(Path)};
+                #{} -> #{}
+            end,
     maps:merge(#{pub_key => PubKey,
                  type => ?ADV_TYPE_CHAT,
                  flags => 0,
                  out_path_len => ?OUT_PATH_UNKNOWN,
+                 out_path => [],
                  name => Name,
                  last_advert => 1700000000,
                  lat => 0,                  % degrees * 1e6
                  lon => 0,
                  lastmod => 1},
-               Opts).
+               maps:merge(Opts, Route)).
 
 %% A direct message arrives over the air from PubKey.
 %% Opts: snr (dB), path_len (hops when flooded; 0xFF = direct route),
-%%       sender_time
+%%       sender_time, path ([<<Hash>>], sets path_len and logs the packet),
+%%       later_copies ([Path], logged after the message)
 receive_dm(Fake, PubKey, Text, Opts) ->
     gen_server:call(Fake, {receive_dm, PubKey, Text, Opts}).
 
@@ -141,13 +158,29 @@ init(Opts) ->
 handle_call(port, _From, #state{listen = Listen} = State) ->
     {reply, inet:port(Listen), State};
 
-handle_call({receive_dm, PubKey, Text, Opts}, _From, State) ->
+handle_call({receive_dm, PubKey, Text, Opts0}, _From,
+            #state{pub_key = <<Mine, _/binary>>} = State) ->
+    Opts = with_path_len(Opts0),
+    <<Sender, _/binary>> = PubKey,
+    %% TXT_MSG payload: dest hash, src hash, MAC, ciphertext (Mesh::createDatagram)
+    Payload = <<Mine, Sender, (crypto:strong_rand_bytes(2 + 16))/binary>>,
+    log_copies(?PAYLOAD_TYPE_TXT_MSG, Payload, maps:get(path, Opts, none), State),
     Frame = contact_msg_frame(PubKey, Text, Opts, State),
-    {reply, ok, queue_message(Frame, State)};
+    State2 = queue_message(Frame, State),
+    [log_copies(?PAYLOAD_TYPE_TXT_MSG, Payload, P, State2) || P <- maps:get(later_copies, Opts, [])],
+    {reply, ok, State2};
 
-handle_call({receive_channel, Idx, SenderName, Text, Opts}, _From, State) ->
+handle_call({receive_channel, Idx, SenderName, Text, Opts0}, _From,
+            #state{channels = Channels} = State) ->
+    Opts = with_path_len(Opts0),
+    %% GRP_TXT payload: channel hash, MAC, ciphertext
+    <<ChannelHash, _/binary>> = crypto:hash(sha256, maps:get(Idx, Channels, <<>>)),
+    Payload = <<ChannelHash, (crypto:strong_rand_bytes(2 + 32))/binary>>,
+    log_copies(?PAYLOAD_TYPE_GRP_TXT, Payload, maps:get(path, Opts, none), State),
     Frame = channel_msg_frame(Idx, <<SenderName/binary, ": ", Text/binary>>, Opts, State),
-    {reply, ok, queue_message(Frame, State)};
+    State2 = queue_message(Frame, State),
+    [log_copies(?PAYLOAD_TYPE_GRP_TXT, Payload, P, State2) || P <- maps:get(later_copies, Opts, [])],
+    {reply, ok, State2};
 
 handle_call({hear_advert, PubKey, Changes}, _From,
             #state{contacts = Contacts, next_lastmod = LastMod} = State) ->
@@ -358,13 +391,15 @@ handle_command(_Other, State) ->
 contact_frame(Code, #{pub_key := PubKey, type := Type, flags := Flags,
                       out_path_len := PathLen, name := Name,
                       last_advert := LastAdvert, lat := Lat, lon := Lon,
-                      lastmod := LastMod}) ->
+                      lastmod := LastMod} = C) ->
+    OutPath = iolist_to_binary(maps:get(out_path, C, [])),
     <<Code,
       PubKey:32/binary,
       Type,
       Flags,
       PathLen,
-      0:(64 * 8),                                   % out_path, MAX_PATH_SIZE
+      OutPath/binary,                               % out_path, MAX_PATH_SIZE
+      0:((64 - byte_size(OutPath)) * 8),
       (pad(Name, 32))/binary,
       LastAdvert:32/little,
       Lat:32/little-signed,
@@ -396,6 +431,21 @@ msg_header(CodeV3, _Code, Opts, #state{app_target_ver = Ver}) when Ver >= 3 ->
     <<CodeV3, Snr4:8/signed, 0, 0>>;
 msg_header(_CodeV3, Code, _Opts, _State) ->
     <<Code>>.
+
+%% path given: flooded, path_len = number of 1-byte hashes
+with_path_len(#{path := Path} = Opts) ->
+    maps:merge(#{path_len => length(Path)}, Opts);
+with_path_len(Opts) ->
+    Opts.
+
+%% PUSH_CODE_LOG_RX_DATA: SNR * 4, RSSI, then the raw packet
+%% (Packet::writeTo: header, path_len, path, payload) of a flooded packet
+log_copies(_Type, _Payload, none, _State) ->
+    ok;
+log_copies(Type, Payload, Path, State) ->
+    Header = (Type bsl 2) bor ?ROUTE_TYPE_FLOOD,       % payload version 0
+    Raw = <<Header, (length(Path)), (iolist_to_binary(Path))/binary, Payload/binary>>,
+    write(State, <<16#88, (-20):8/signed, (-90):8/signed, Raw/binary>>).
 
 queue_message(Frame, #state{offline = Offline} = State) ->
     write(State, <<16#83>>),                        % PUSH_CODE_MSG_WAITING

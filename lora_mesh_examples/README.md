@@ -1,14 +1,15 @@
 # lora_mesh_examples
 
 The examples of [meshcore_py](https://github.com/meshcore-dev/meshcore_py/tree/main/examples),
-rewritten in **Erlang** (`src/ex_*.erl`) and **LFE** (`src/lx_*.lfe`) for lora_mesh 0.3.
+rewritten in **Erlang** (`src/ex_*.erl`) and **LFE** (`src/lx_*.lfe`) for lora_mesh 0.3.2
+(they also work with 0.3.0, without the repeater names).
 
 meshcore_py talks to one radio over USB, TCP or BLE. These programs talk to **lora_mesh** over
 MQTT instead, so they work with every bridge lora_mesh has (MeshCore and Meshtastic) and need
-no change to lora_mesh 0.3:
+no change to lora_mesh:
 
 ```
-radio(s) ── lora_mesh 0.3 ── MQTT broker ── lme (these examples)
+radio(s) ── lora_mesh 0.3.2 ── MQTT broker ── lme (these examples)
                                         └── lora_mesh_client (Python)
 ```
 
@@ -47,14 +48,16 @@ at without radios, run the mixed demo: `DEMO=mixed ./lora_demo.sh` from the repo
 Try these against the mixed demo:
 
 ```sh
-lme contacts                      # Alice, Bob, Pump, Ridge, the two gateways (and Dave later)
+lme contacts                      # Alice, Bob, Pump, Ridge, the two gateways (and Dave later),
+                                  # with each gateway's route to them: "field: Ridge"
+lme readmsgs                      # ... (Ridge > 77?, heard by barn)
 lme contacts --all --json         # Meshtastic nodes too, as JSON
 lme infos
 lme msg -d Alice -m "hello"       # Alice answers "got it: hello"
 lme readmsgs --count 5
 lme chat -d Alice                 # type lines; "to Bob", "to #0", "contacts", "quit"
-lme pingbot                       # answers Bob's "ping?" on channel 0
-lme monitor                       # nodes appearing and being heard
+lme pingbot                       # answers Bob's "ping?": @[Bob] Pong 🏓(Ridge, heard by field)
+lme monitor                       # nodes appearing, being heard, routes changing
 ```
 
 Add `--lfe` to any of them to run the LFE version. Other options:
@@ -82,8 +85,10 @@ disappear and some information is not available over MQTT:
   copies heard by more than one. No `ensure_contacts()` or `get_msg()` loop.
 - **No delivery ACK.** lora_mesh 0.3 only logs the radio's ACK; it does not publish it.
   `msg` waits for an *answer* from the contact instead (the demo's nodes answer "got it: ...").
-- **Path:** the pingbot's `(N hops, ...)` shows the hop count and the lora_mesh bridges that heard
-  the message, not the repeaters on the way (lora_mesh 0.3 does not read the RX log).
+- **Path:** like serial_pingbot.py, the path names the repeaters: lora_mesh 0.3.2 reads every
+  bridge's RX log and publishes `path` (MeshCore) and `relay` (Meshtastic: only the last relay is
+  known), with names where it knows them: `Ridge > 77?`. See `../lora_mesh/PATHS.md`.
+  With lora_mesh 0.3.0 the examples show the hop count instead.
 - **infos:** the radio's own SELF_INFO is logged by lora_mesh, not published. `infos` shows the
   node count and the bridges seen instead.
 - **battery:** lora_mesh 0.3 cannot ask a bridge for its own battery. `monitor` shows the battery
@@ -94,7 +99,7 @@ could add them to the MeshCore bridge and MQTT):
 
 | meshcore_py example | needs |
 |---|---|
-| serial_trace.py | trace a path through repeaters |
+| serial_trace.py | trace a path through repeaters, with SNR per hop (an active test; 0.3.2 records paths passively) |
 | serial_repeater_status.py, tcp_login_status.py, serial_repeater_telemetry.py | log in to a repeater, ask for status / telemetry |
 | serial_channel_manager.py | read and set channel names and keys |
 | ble_t1000_custom_vars.py, ble_t1000_set_cv.py | device custom variables |

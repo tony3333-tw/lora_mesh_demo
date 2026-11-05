@@ -1,6 +1,6 @@
 {application, lora_mesh,
  [{description, "Meshtastic and MeshCore bridges, router and registry, record style"},
-  {vsn, "0.3.0"},
+  {vsn, "0.3.2"},
   {registered, [lora_mesh_sup,
                 lora_mesh_registry,
                 lora_mesh_router,

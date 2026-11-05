@@ -6,6 +6,8 @@
 ;;;   lme contacts --lfe --all
 ;;;   lme contacts --lfe --json
 ;;;
+;;; routes (lora_mesh 0.3.2): how each bridge's radio reaches the contact.
+;;;
 
 (defmodule lx_contacts
   (export (run 1)))
@@ -27,13 +29,13 @@
   (('())
    (io:format "no nodes yet (is lora_mesh running and connected to the broker?)~n"))
   ((nodes)
-   (io:format "~-15s ~-9s ~-14s ~-20s ~-10s ~s~n"
-              (list "id" "type" "name" "position" "heard" "heard by"))
+   (io:format "~-15s ~-9s ~-14s ~-20s ~-10s ~-12s ~s~n"
+              (list "id" "type" "name" "position" "heard" "heard by" "routes"))
    (lists:foreach (fun row 1) nodes)
    (io:format "~p nodes~n" (list (length nodes)))))
 
 (defun row (node)
-  (io:format "~-15ts ~-9ts ~-14ts ~-20s ~-10s ~ts~n"
+  (io:format "~-15ts ~-9ts ~-14ts ~-20s ~-10s ~-12ts ~ts~n"
              (list (maps:get #"id" node)
                    (lmc:kind node)
                    (name node)
@@ -41,7 +43,8 @@
                    (ago (maps:get #"last_heard" node 'null))
                    (lists:join ","
                                (lists:sort
-                                (maps:keys (maps:get #"heard_by" node #m())))))))
+                                (maps:keys (maps:get #"heard_by" node #m()))))
+                   (lmc:route_text node))))
 
 (defun name (node)
   (case (maps:get #"long_name" node 'null)

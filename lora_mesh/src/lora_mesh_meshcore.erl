@@ -15,6 +15,11 @@
 %% Startup: DEVICE_QUERY (protocol 3, so messages carry SNR), APP_START
 %% (our identity), SET_DEVICE_TIME, GET_CONTACTS, then one sync round.
 %%
+%% Paths (0.3.2): every message's rxq carries `path', the repeaters it
+%% passed, taken from the radio's RX log (PUSH LOG_RX_DATA); every
+%% contact's node record carries `routes', the route each bridge's radio
+%% uses to reach it (the contact's out_path). See lora_mesh_path.
+%%
 %% Node numbers: the first 6 bytes of a public key, as an integer with
 %% bit 48 set so they never collide with 32-bit Meshtastic numbers.
 %% Ids: <<"@0a0b0c0d0e0f">>.
@@ -41,6 +46,8 @@
 -define(COMMAND_TIMEOUT_MS, 5000).
 -define(RECONNECT_MIN_MS, 1000).
 -define(RECONNECT_MAX_MS, 30000).
+-define(RX_LOG_MS, 30000).      % how long an RX log entry may wait for its message
+-define(RX_LOG_MAX, 32).
 
 -record(state, {
     id                              :: atom(),
@@ -60,6 +67,9 @@
     sync_queued = false             :: boolean(),
     contacts_queued = false         :: boolean(),
     contacts_since = 0              :: non_neg_integer(),
+    %% recent RX log entries (text packets only), oldest first, to find a
+    %% message's path when it is synced: [{MonotonicMs, Packet}]
+    rx_log = []                     :: [{integer(), map()}],
     backoff = ?RECONNECT_MIN_MS     :: pos_integer()}).
 
 %%====================================================================
@@ -380,9 +390,11 @@ frame(Payload, #state{id = Id} = State) ->
 
 handle_response(msg_waiting, State) ->
     queue_sync(State);
-handle_response({new_advert, Contact}, State) ->
-    contact(Contact),
+handle_response({new_advert, Contact}, #state{id = Id} = State) ->
+    contact(Id, Contact),
     State;
+handle_response({rx_log, #{raw := Raw}}, State) ->
+    rx_log(Raw, State);
 handle_response({advert, _PubKey}, State) ->
     %% a known contact advertised again: fetch what changed
     queue_contacts(State);
@@ -407,7 +419,7 @@ handle_response({self_info, Self}, #state{current = {app_start, _, _}, id = Id} 
     #{pub_key := PubKey, name := Name} = Self,
     Num = node_num(binary:part(PubKey, 0, 6)),
     logger:notice("lora_mesh_meshcore ~p: my node is ~s (~ts)", [Id, node_id(Num), Name]),
-    contact(#{pub_key => PubKey,
+    contact(Id, #{pub_key => PubKey,
               type => maps:get(adv_type, Self),
               name => Name,
               last_advert => 0,
@@ -417,19 +429,17 @@ handle_response({self_info, Self}, #state{current = {app_start, _, _}, id = Id} 
 
 handle_response({contacts_start, _Count}, #state{current = {contacts, _, _}} = State) ->
     continue(State);
-handle_response({contact, Contact}, #state{current = {contacts, _, _}} = State) ->
-    contact(Contact),
+handle_response({contact, Contact}, #state{current = {contacts, _, _}, id = Id} = State) ->
+    contact(Id, Contact),
     continue(State);
 handle_response({end_of_contacts, LastMod}, #state{current = {contacts, _, _}} = State) ->
     done(ok, State#state{contacts_queued = false,
                          contacts_since = max(LastMod, State#state.contacts_since)});
 
 handle_response({contact_msg, Msg}, #state{current = {sync, _, _}} = State) ->
-    contact_message(Msg, State),
-    resync(State);
+    resync(contact_message(Msg, State));
 handle_response({channel_msg, Msg}, #state{current = {sync, _, _}} = State) ->
-    channel_message(Msg, State),
-    resync(State);
+    resync(channel_message(Msg, State));
 handle_response(no_more_messages, #state{current = {sync, _, _}} = State) ->
     done(ok, State#state{sync_queued = false});
 
@@ -460,8 +470,11 @@ resync(State) ->
 %% Into the registry and the router
 %%====================================================================
 
-contact(#{pub_key := PubKey, name := Name, type := Type} = C) ->
+contact(Bridge, #{pub_key := PubKey, name := Name, type := Type} = C) ->
     Num = node_num(binary:part(PubKey, 0, 6)),
+    %% the route this radio uses to reach the contact; resolved now, while
+    %% the names of the repeaters on it are known
+    Route = lora_mesh_path:meshcore(maps:get(out_path, C, undefined)),
     LastAdvert = maps:get(last_advert, C, 0),
     Position = case {maps:get(latitude, C, 0.0), maps:get(longitude, C, 0.0)} of
                    {Lat, Lon} when Lat == 0, Lon == 0 -> undefined;
@@ -478,12 +491,23 @@ contact(#{pub_key := PubKey, name := Name, type := Type} = C) ->
                                undefined -> Node#mesh_node.position;
                                _ -> Position
                            end,
-                last_heard = latest(Node#mesh_node.last_heard, LastAdvert)}
+                last_heard = latest(Node#mesh_node.last_heard, LastAdvert),
+                routes = case Route of
+                             undefined -> maps:remove(Bridge, Node#mesh_node.routes);
+                             _ -> (Node#mesh_node.routes)#{Bridge => Route}
+                         end}
       end).
 
-contact_message(#{from_prefix := Prefix, text := Text, sender_time := Time} = Msg,
-                #state{id = Id, self = Self}) ->
+contact_message(#{from_prefix := <<SrcHash, _/binary>> = Prefix, text := Text,
+                  sender_time := Time, path_len := PathLen} = Msg,
+                #state{id = Id, self = Self} = State) ->
     FromNum = node_num(Prefix),
+    Match = fun(#{type := txt_msg, src_hash := S, dest_hash := D}) ->
+                    S =:= SrcHash andalso is_to_me(D, Self);
+               (_) ->
+                    false
+            end,
+    {Path, State2} = take_path(Match, PathLen, State),
     Rx = #mesh_rx{from = node_id(FromNum),
                   to = case Self of
                            #{num := SelfNum} -> node_id(SelfNum);
@@ -491,16 +515,23 @@ contact_message(#{from_prefix := Prefix, text := Text, sender_time := Time} = Ms
                        end,
                   channel = 0,
                   id = Time,
-                  rxq = rxq(Msg),
+                  rxq = rxq(Msg, Path),
                   text = Text,
                   protocol = meshcore},
-    route(Id, {meshcore, dm, FromNum, Time, erlang:phash2(Text)}, FromNum, Rx).
+    route(Id, {meshcore, dm, FromNum, Time, erlang:phash2(Text)}, FromNum, Rx),
+    State2.
 
 channel_message(#{channel := Channel, sender_name := Name, text := Text,
-                  sender_time := Time} = Msg,
-                #state{id = Id}) ->
+                  sender_time := Time, path_len := PathLen} = Msg,
+                #state{id = Id} = State) ->
     %% channel messages name the sender but carry no key: look it up
     FromNum = num_by_name(Name),
+    %% the log's channel hash is a hash of the channel key, which lora_mesh
+    %% does not read: kind and path length must do
+    Match = fun(#{type := grp_txt}) -> true;
+               (_) -> false
+            end,
+    {Path, State2} = take_path(Match, PathLen, State),
     Rx = #mesh_rx{from = case FromNum of
                              undefined -> <<"?">>;
                              _ -> node_id(FromNum)
@@ -508,12 +539,13 @@ channel_message(#{channel := Channel, sender_name := Name, text := Text,
                   to = <<"!ffffffff">>,
                   channel = Channel,
                   id = Time,
-                  rxq = rxq(Msg),
+                  rxq = rxq(Msg, Path),
                   text = Text,
                   protocol = meshcore,
                   sender_name = Name},
     %% the slot number can differ between companions: not in the key
-    route(Id, {meshcore, channel, Name, Time, erlang:phash2(Text)}, FromNum, Rx).
+    route(Id, {meshcore, channel, Name, Time, erlang:phash2(Text)}, FromNum, Rx),
+    State2.
 
 route(Id, Key, FromNum, Rx) ->
     case lora_mesh_router:message(Id, Key, FromNum, Rx) of
@@ -522,9 +554,58 @@ route(Id, Key, FromNum, Rx) ->
             logger:warning("lora_mesh_meshcore ~p: no router, message dropped", [Id])
     end.
 
+%%====================================================================
+%% Paths, from the RX log
+%%====================================================================
+
+%% The radio pushes every packet it hears (rx_log) before it delivers a
+%% message, including the copies other repeaters relay later. Text
+%% packets that were flooded are kept for ?RX_LOG_MS: their path is what
+%% a message lacks.
+rx_log(Raw, #state{rx_log = Log} = State) ->
+    Now = erlang:monotonic_time(millisecond),
+    Recent = [E || {T, _} = E <- Log, Now - T < ?RX_LOG_MS],
+    case ?CODEC:packet(Raw) of
+        {ok, #{route := flood, type := Type} = Packet}
+          when Type =:= txt_msg; Type =:= grp_txt ->
+            State#state{rx_log = lists:nthtail(max(0, length(Recent) + 1 - ?RX_LOG_MAX),
+                                               Recent ++ [{Now, Packet}])};
+        _ ->
+            State#state{rx_log = Recent}
+    end.
+
+%% A message's path: [] when it was heard straight from the sender,
+%% undefined when it came by a direct route (the packet's path is used
+%% up on the way) or no log entry matches. Otherwise the earliest unused
+%% entry of the right kind with the message's exact path_len byte: the
+%% copy the radio delivered is the first it heard, and copies relayed
+%% further have longer paths.
+take_path(Match, PathLen, #state{rx_log = Log} = State) ->
+    case ?CODEC:hops(PathLen) of
+        direct ->
+            {undefined, State};
+        0 ->
+            {[], State};
+        _ ->
+            case lists:splitwith(fun({_T, P}) ->
+                                         not (Match(P) andalso maps:get(path_len, P) =:= PathLen)
+                                 end,
+                                 Log) of
+                {Before, [{_T, #{path := Hashes}} | After]} ->
+                    {lora_mesh_path:meshcore(Hashes), State#state{rx_log = Before ++ After}};
+                {_All, []} ->
+                    {undefined, State}
+            end
+    end.
+
+%% A DM's destination hash is the first byte of our key (unknown before
+%% APP_START has answered: accept)
+is_to_me(DestHash, #{pub_key := <<Mine, _/binary>>}) -> DestHash =:= Mine;
+is_to_me(_DestHash, _Self) -> true.
+
 %% MeshCore gives SNR and hops; no RSSI. hop_start - hop_limit = hops,
 %% as for Meshtastic (0 when delivered by a direct route).
-rxq(#{snr := Snr, path_len := PathLen}) ->
+rxq(#{snr := Snr, path_len := PathLen}, Path) ->
     Hops = case ?CODEC:hops(PathLen) of
                direct -> 0;
                N -> N
@@ -535,7 +616,8 @@ rxq(#{snr := Snr, path_len := PathLen}) ->
                        end,
               rx_rssi = 0,
               hop_start = Hops,
-              hop_limit = 0}.
+              hop_limit = 0,
+              path = Path}.
 
 %% The registry may live on another Erlang node (role bridge); then
 %% names cannot be resolved here and updates are skipped.

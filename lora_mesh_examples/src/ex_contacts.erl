@@ -10,6 +10,9 @@
 %%   lme contacts --all       Meshtastic nodes too
 %%   lme contacts --json      as JSON, like the Python example
 %%
+%% routes (lora_mesh 0.3.2): how each bridge's radio reaches the contact,
+%% e.g. "field: Ridge; barn: direct".
+%%
 -module(ex_contacts).
 
 -export([run/1]).
@@ -28,19 +31,20 @@ run(Opts) ->
 table([]) ->
     io:format("no nodes yet (is lora_mesh running and connected to the broker?)~n");
 table(Nodes) ->
-    io:format("~-15s ~-9s ~-14s ~-20s ~-10s ~s~n",
-              ["id", "type", "name", "position", "heard", "heard by"]),
+    io:format("~-15s ~-9s ~-14s ~-20s ~-10s ~-12s ~s~n",
+              ["id", "type", "name", "position", "heard", "heard by", "routes"]),
     lists:foreach(fun row/1, Nodes),
     io:format("~p nodes~n", [length(Nodes)]).
 
 row(Node) ->
-    io:format("~-15ts ~-9ts ~-14ts ~-20s ~-10s ~ts~n",
+    io:format("~-15ts ~-9ts ~-14ts ~-20s ~-10s ~-12ts ~ts~n",
               [maps:get(<<"id">>, Node),
                lmc:kind(Node),
                name(Node),
                position(maps:get(<<"position">>, Node, null)),
                ago(maps:get(<<"last_heard">>, Node, null)),
-               lists:join(",", lists:sort(maps:keys(maps:get(<<"heard_by">>, Node, #{}))))]).
+               lists:join(",", lists:sort(maps:keys(maps:get(<<"heard_by">>, Node, #{})))),
+               lmc:route_text(Node)]).
 
 name(Node) ->
     case maps:get(<<"long_name">>, Node, null) of

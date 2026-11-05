@@ -18,7 +18,13 @@
 %%   - two fake MeshCore companions, "field" and "barn", built from the
 %%     firmware source (lora_mesh_fake_companion), with the same contacts:
 %%     Alice, Bob, Pump (a sensor) and Ridge (a repeater);
-%%   - one fake Meshtastic node, "home", that knows Hill top and School;
+%%   - one fake Meshtastic node, "home", that knows Hill top, School and
+%%     Tower (a router);
+%%
+%% Paths (0.3.2): field reaches Alice through the repeater Ridge (d1),
+%% Pump's reports pass Ridge and an unknown repeater (77), Bob is in range
+%% of barn; Hill top's broadcasts are relayed by Tower. lora_mesh puts
+%% these in every message's rxq (path / relay) and every node's routes.
 %%   - lora_mesh with three bridges to them, publishing to your broker.
 %%
 %% Every few seconds a scripted message arrives on air: direct messages,
@@ -55,6 +61,9 @@
 -define(HILL_TOP, 16#0a0b0c0d).
 -define(SCHOOL, 16#0c0c0c0c).
 -define(HOME_NODE, 16#0600d1e5).
+-define(TOWER, 16#0d0d0dee).
+-define(R_RIDGE, <<16#d1>>).            % path hashes: first key byte
+-define(R_FAR, <<16#77>>).              % a repeater no radio knows
 
 -define(POLL_MS, 1000).
 
@@ -85,13 +94,12 @@ stop() ->
 
 init(Opts) ->
     process_flag(trap_exit, true),
-    Contacts = contacts(),
     {ok, Field} = lora_mesh_fake_companion:start(#{name => <<"Field gw">>,
                                                    pub_key => ?KEY(16#5e, 10),
-                                                   contacts => Contacts}),
+                                                   contacts => contacts(field)}),
     {ok, Barn} = lora_mesh_fake_companion:start(#{name => <<"Barn gw">>,
                                                   pub_key => ?KEY(16#6e, 11),
-                                                  contacts => Contacts}),
+                                                  contacts => contacts(barn)}),
     {ok, FieldPort} = lora_mesh_fake_companion:port(Field),
     {ok, BarnPort} = lora_mesh_fake_companion:port(Barn),
     {Tastic, TasticPort} = start_tastic(),
@@ -172,22 +180,38 @@ terminate(_Reason, #state{field = Field, barn = Barn, tastic = Tastic}) ->
 %% The script
 %%====================================================================
 
-contacts() ->
-    [lora_mesh_fake_companion:contact(?ALICE, <<"Alice">>,
-                                      #{lat => 24147700, lon => 120673600, lastmod => 1}),
+%% The same contacts on both radios, each with its own route to them
+%% (out_path: [] = in range; none given = no route yet, the radio floods)
+contacts(Radio) ->
+    Routes = case Radio of
+                 field -> #{ridge => [], alice => [?R_RIDGE], pump => [?R_RIDGE, ?R_FAR]};
+                 %% first hop first: barn -> 77 -> Ridge -> Pump (Pump's reports
+                 %% come the other way: Ridge, then 77)
+                 barn -> #{ridge => [], bob => [], pump => [?R_FAR, ?R_RIDGE]}
+             end,
+    Route = fun(Who) ->
+                    case Routes of
+                        #{Who := Path} -> #{out_path => Path};
+                        #{} -> #{}
+                    end
+            end,
+    [lora_mesh_fake_companion:contact(?RIDGE, <<"Ridge">>,
+                                      maps:merge(#{type => 2, lastmod => 1}, Route(ridge))),
+     lora_mesh_fake_companion:contact(?ALICE, <<"Alice">>,
+                                      maps:merge(#{lat => 24147700, lon => 120673600, lastmod => 2},
+                                                 Route(alice))),
      lora_mesh_fake_companion:contact(?BOB, <<"Bob">>,
-                                      #{lat => 24150200, lon => 120680100, lastmod => 2}),
+                                      maps:merge(#{lat => 24150200, lon => 120680100, lastmod => 3},
+                                                 Route(bob))),
      lora_mesh_fake_companion:contact(?PUMP, <<"Pump">>,
-                                      #{type => 4, lastmod => 3}),
-     lora_mesh_fake_companion:contact(?RIDGE, <<"Ridge">>,
-                                      #{type => 2, lastmod => 4})].
+                                      maps:merge(#{type => 4, lastmod => 4}, Route(pump)))].
 
 % Alice reports soil moisture, by a direct message to the field radio
 scene(0, N, #state{field = Field} = State) ->
     Text = fmt("soil moisture ~p%", [28 + rand:uniform(10)]),
     lora_mesh_fake_companion:receive_dm(Field, ?ALICE, Text,
-                                        #{snr => snr(4, 9), path_len => 1, sender_time => now_s()}),
-    say("-> Alice to field gw (direct): ~ts", [Text]),
+                                        #{snr => snr(4, 9), path => [?R_RIDGE], sender_time => now_s()}),
+    say("-> Alice to field gw (direct, via Ridge): ~ts", [Text]),
     maybe_dave(N, State);
 
 % Bob speaks on the channel; both radios hear him, lora_mesh publishes once
@@ -195,29 +219,33 @@ scene(1, _N, #state{field = Field, barn = Barn}) ->
     Text = <<"rain starting at the north gate">>,
     Time = now_s(),
     lora_mesh_fake_companion:receive_channel(Field, 0, <<"Bob">>, Text,
-                                             #{snr => 3.5, path_len => 1, sender_time => Time}),
+                                             #{snr => 3.5, path => [?R_RIDGE], sender_time => Time}),
+    %% barn hears Bob himself, then Ridge's rebroadcast (dropped as a copy)
     lora_mesh_fake_companion:receive_channel(Barn, 0, <<"Bob">>, Text,
-                                             #{snr => 8.0, path_len => 0, sender_time => Time}),
-    say("-> Bob on channel 0, heard by field (SNR 3.5) and barn (SNR 8.0): ~ts", [Text]);
+                                             #{snr => 8.0, path => [], later_copies => [[?R_RIDGE]],
+                                               sender_time => Time}),
+    say("-> Bob on channel 0, heard by field via Ridge (SNR 3.5) and barn directly (SNR 8.0): ~ts",
+        [Text]);
 
 % Hill top broadcasts a temperature on Meshtastic
 scene(2, _N, #state{tastic = Tastic}) ->
     Text = fmt("temperature ~.1f C", [20 + rand:uniform() * 8]),
     tastic_say(Tastic, ?HILL_TOP, ?MESH_BROADCAST, Text),
-    say("-> Hill top (Meshtastic, to everyone): ~ts", [Text]);
+    say("-> Hill top (Meshtastic, to everyone, relayed by Tower): ~ts", [Text]);
 
 % the pump controller, a sensor node, reports
 scene(3, _N, #state{barn = Barn}) ->
     Text = fmt("pump on, flow ~p L/min", [10 + rand:uniform(5)]),
     lora_mesh_fake_companion:receive_dm(Barn, ?PUMP, Text,
-                                        #{snr => snr(-2, 3), path_len => 2, sender_time => now_s()}),
-    say("-> Pump to barn gw (direct, 2 hops): ~ts", [Text]);
+                                        #{snr => snr(-2, 3), path => [?R_RIDGE, ?R_FAR],
+                                          sender_time => now_s()}),
+    say("-> Pump to barn gw (direct, 2 hops: Ridge, then repeater 77): ~ts", [Text]);
 
 % a question a Python bot can answer (examples/demo_bot.py)
 scene(4, _N, #state{field = Field}) ->
     lora_mesh_fake_companion:receive_channel(Field, 0, <<"Bob">>, <<"ping?">>,
-                                             #{snr => snr(2, 6), path_len => 1, sender_time => now_s()}),
-    say("-> Bob on channel 0: ping?  (a bot may answer)").
+                                             #{snr => snr(2, 6), path => [?R_RIDGE], sender_time => now_s()}),
+    say("-> Bob on channel 0 (via Ridge): ping?  (a bot may answer)").
 
 % once, early on: a new node appears
 maybe_dave(5, #state{field = Field}) ->
@@ -248,7 +276,7 @@ answer(Name, Radio, {dm, PrefixHex, Text, Ack}) ->
                                 lora_mesh_fake_companion:receive_dm(Radio, Key,
                                                                     <<"got it: ", Text/binary>>,
                                                                     #{snr => snr(3, 8),
-                                                                      path_len => 1,
+                                                                      path => [?R_RIDGE],
                                                                       sender_time => now_s()})
                         end);
         error ->
@@ -309,6 +337,8 @@ tastic_frame(Sock, Demo, Frame) ->
                                                       241477000, 1206736000)}),
             tastic_send(Sock, {node_info, tastic_node(?SCHOOL, <<"School">>, <<"SCHL">>,
                                                       241460000, 1206790000)}),
+            Tower = tastic_node(?TOWER, <<"Tower">>, <<"TOWR">>, 241500000, 1206750000),
+            tastic_send(Sock, {node_info, Tower#node_info{user = (Tower#node_info.user)#user{role = 'ROUTER'}}}),
             tastic_send(Sock, {config_complete_id, Id});
         #to_radio{payload_variant = {packet, Packet}} ->
             Demo ! {tastic_sent, Packet};
@@ -329,12 +359,15 @@ tastic_send(Sock, Variant) ->
     Bin = meshtastic_pb:encode_msg(#from_radio{payload_variant = Variant}),
     gen_tcp:send(Sock, lora_mesh_frame:encode(Bin)).
 
+%% one hop (hop_start 3, hop_limit 2), rebroadcast by Tower: relay_node
+%% is the last byte of its node number
 tastic_say(Tastic, From, To, Text) ->
     Packet = lora_mesh_fake_node:text_packet(From, rand:uniform(16#7fffffff), snr(2, 9), Text),
-    Tastic ! {push, {packet, Packet#mesh_packet{to = To}}}.
+    Tastic ! {push, {packet, Packet#mesh_packet{to = To, relay_node = ?TOWER band 16#ff}}}.
 
 tastic_name(?HILL_TOP) -> <<"Hill top">>;
 tastic_name(?SCHOOL) -> <<"School">>;
+tastic_name(?TOWER) -> <<"Tower">>;
 tastic_name(Num) -> lora_mesh_node:node_id(Num).
 
 %%====================================================================

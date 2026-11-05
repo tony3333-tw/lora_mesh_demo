@@ -31,6 +31,8 @@
 %% responses and pushes
 -export([response/1]).
 -export([hops/1]).
+-export([path_hashes/2]).
+-export([packet/1]).
 -export([max_text_len/0]).
 
 %% command codes
@@ -64,7 +66,16 @@
 -define(PUSH_PATH_UPDATED, 16#81).
 -define(PUSH_SEND_CONFIRMED, 16#82).
 -define(PUSH_MSG_WAITING, 16#83).
+-define(PUSH_LOG_RX_DATA, 16#88).
 -define(PUSH_NEW_ADVERT, 16#8A).
+
+%% raw packets (src/Packet.h)
+-define(ROUTE_TRANSPORT_FLOOD, 0).
+-define(ROUTE_FLOOD, 1).
+-define(ROUTE_DIRECT, 2).
+-define(ROUTE_TRANSPORT_DIRECT, 3).
+-define(PAYLOAD_TXT_MSG, 16#02).
+-define(PAYLOAD_GRP_TXT, 16#05).
 
 -define(TXT_TYPE_PLAIN, 0).
 -define(TXT_TYPE_SIGNED_PLAIN, 2).
@@ -270,6 +281,15 @@ response(<<?PUSH_MSG_WAITING, _/binary>>) ->
 response(<<?PUSH_NEW_ADVERT,
            Contact/binary>>) ->
     {new_advert, contact(Contact)};
+%% logRxRaw: every packet the radio hears, before it is checked or merged,
+%% so copies relayed by several repeaters each arrive here
+response(<<?PUSH_LOG_RX_DATA,
+           Snr4:8/signed,
+           Rssi:8/signed,
+           Raw/binary>>) ->
+    {rx_log, #{snr => Snr4 / 4,
+               rssi => Rssi,
+               raw => Raw}};
 response(<<Code, Rest/binary>>) ->
     {unknown, Code, Rest}.
 
@@ -281,16 +301,70 @@ hops(?PATH_DIRECT) ->
 hops(PathLen) ->
     PathLen band 63.
 
+%% A path as the firmware stores it (Packet::getPathHashSize/Count):
+%% PathLen's top 2 bits are the hash size - 1, the low 6 bits the number
+%% of hashes; Bytes start with them. -> [Hash], first repeater first.
+%% 0xFF (OUT_PATH_UNKNOWN in a contact) -> undefined.
+-spec path_hashes(byte(), binary()) -> [binary()] | undefined.
+path_hashes(?PATH_DIRECT, _Bytes) ->
+    undefined;
+path_hashes(PathLen, Bytes) ->
+    Size = (PathLen bsr 6) + 1,
+    Count = PathLen band 63,
+    case Bytes of
+        <<Path:(Size * Count)/binary, _/binary>> ->
+            [H || <<H:Size/binary>> <= Path];
+        _ ->
+            undefined
+    end.
+
+%% A raw packet from rx_log (Packet::readFrom):
+%%   header: version(2 bits) payload type(4) route type(2)
+%%   [transport codes, 4 bytes, for the two transport route types]
+%%   path_len, path, payload
+%% Only what lora_mesh uses is decoded: for TXT_MSG the first payload
+%% bytes are the destination and sender hashes (1 byte each,
+%% PATH_HASH_SIZE), for GRP_TXT the channel hash.
+-spec packet(binary()) -> {ok, map()} | error.
+packet(<<Header, Rest/binary>>) ->
+    Route = Header band 3,
+    Type = (Header bsr 2) band 16#0F,
+    After = case Route of
+                ?ROUTE_TRANSPORT_FLOOD -> skip_transport(Rest);
+                ?ROUTE_TRANSPORT_DIRECT -> skip_transport(Rest);
+                _ -> Rest
+            end,
+    case After of
+        <<PathLen, More/binary>> ->
+            ByteLen = ((PathLen bsr 6) + 1) * (PathLen band 63),
+            case More of
+                <<Path:ByteLen/binary, Payload/binary>> when Payload =/= <<>> ->
+                    {ok, maps:merge(#{route => route(Route),
+                                      type => payload_type(Type),
+                                      path_len => PathLen,
+                                      path => path_hashes(PathLen, Path)},
+                                    payload_ids(Type, Payload))};
+                _ ->
+                    error
+            end;
+        _ ->
+            error
+    end;
+packet(_) ->
+    error.
+
 %%====================================================================
 %% Internal
 %%====================================================================
 
-%% writeContactRespFrame: key, type, flags, path, name, times, position
+%% writeContactRespFrame: key, type, flags, path, name, times, position.
+%% out_path: the route this radio uses to reach the contact, first hop
+%% first ([] = in radio range, undefined = no route known: flood).
 contact(<<PubKey:32/binary,
           Type,
           Flags,
           OutPathLen,
-          _OutPath:64/binary,
+          OutPath:64/binary,
           Name:32/binary,
           LastAdvert:32/little,
           Lat:32/little-signed,
@@ -301,6 +375,7 @@ contact(<<PubKey:32/binary,
       type => adv_type(Type),
       flags => Flags,
       out_path_len => OutPathLen,
+      out_path => path_hashes(OutPathLen, OutPath),
       name => cstring(Name),
       last_advert => LastAdvert,
       latitude => Lat / 1.0e6,
@@ -376,6 +451,25 @@ self_name(<<_MultiAcks,
     cstring(Name);
 self_name(_Older) ->
     <<>>.
+
+skip_transport(<<_Codes:4/binary, Rest/binary>>) -> Rest;
+skip_transport(_) -> <<>>.
+
+route(?ROUTE_TRANSPORT_FLOOD) -> flood;
+route(?ROUTE_FLOOD) -> flood;
+route(?ROUTE_DIRECT) -> direct;
+route(?ROUTE_TRANSPORT_DIRECT) -> direct.
+
+payload_type(?PAYLOAD_TXT_MSG) -> txt_msg;
+payload_type(?PAYLOAD_GRP_TXT) -> grp_txt;
+payload_type(Other) -> Other.
+
+payload_ids(?PAYLOAD_TXT_MSG, <<Dest, Src, _/binary>>) ->
+    #{dest_hash => Dest, src_hash => Src};
+payload_ids(?PAYLOAD_GRP_TXT, <<Channel, _/binary>>) ->
+    #{channel_hash => Channel};
+payload_ids(_Type, _Payload) ->
+    #{}.
 
 split_sender(Text) ->
     case binary:split(Text, <<": ">>) of

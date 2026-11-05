@@ -44,7 +44,7 @@ def sender(msg: Message) -> str:
 def show_and_answer(msg: Message) -> None:
     where = "channel %d" % msg.channel if msg.is_broadcast else "direct"
     print(f"{now()}  {sender(msg)} ({msg.protocol}, {where}): {msg.text}"
-          f"   [snr {msg.rx.rx_snr:.1f} dB, hops {msg.rx.hops}, via {', '.join(msg.bridges) or '-'}]",
+          f"   [snr {msg.rx.rx_snr:.1f} dB, {msg.rx.path_text}, heard by {', '.join(msg.bridges) or '-'}]",
           flush=True)
 
     if msg.text.strip().lower().rstrip("?") != "ping":

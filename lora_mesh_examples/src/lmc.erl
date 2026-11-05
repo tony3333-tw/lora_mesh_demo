@@ -36,6 +36,10 @@
 -export([is_channel/1]).
 -export([hops/1]).
 -export([path_info/1]).
+-export([path_text/1]).
+-export([hop_name/1]).
+-export([route_text/1]).
+-export([route/1]).
 -export([describe/2]).
 -export([kind/1]).
 
@@ -206,17 +210,52 @@ hops(Rx) ->
     #{<<"hop_start">> := Start, <<"hop_limit">> := Limit} = maps:get(<<"rxq">>, Rx),
     Start - Limit.
 
-%% "(1 hops, barn)": like serial_pingbot.py's path info. lora_mesh 0.3
-%% passes on the hop count and the bridges that heard the message, not
-%% the repeaters on the path.
+%% "(Ridge > 77?, heard by barn)": like serial_pingbot.py's path info,
+%% from lora_mesh 0.3.2's rxq path (MeshCore) or relay (Meshtastic)
 path_info(Rx) ->
     Bridges = lists:join(",", maps:get(<<"bridges">>, Rx, [])),
-    case hops(Rx) of
-        0 -> unicode:characters_to_list(["(0 hops, direct, ", Bridges, ")"]);
-        N -> unicode:characters_to_list(["(", integer_to_list(N), " hops, ", Bridges, ")"])
+    unicode:characters_to_list(["(", path_text(Rx), ", heard by ", Bridges, ")"]).
+
+%% "Ridge > 77?"       MeshCore: every repeater, first one first
+%% "direct"            heard straight from the sender
+%% "last relay Tower"  Meshtastic: only the last rebroadcaster is known
+%% "2 hops"            no path known (lora_mesh 0.3.0, or a direct route)
+path_text(Rx) ->
+    RxQ = maps:get(<<"rxq">>, Rx),
+    case {maps:get(<<"path">>, RxQ, null), maps:get(<<"relay">>, RxQ, null)} of
+        {[], _} ->
+            "direct";
+        {Path, _} when is_list(Path) ->
+            lists:join(" > ", [hop_name(H) || H <- Path]);
+        {null, null} ->
+            case hops(Rx) of
+                0 -> "direct";
+                N -> integer_to_list(N) ++ " hops"
+            end;
+        {null, Relay} ->
+            ["last relay ", hop_name(Relay)]
     end.
 
-%% "12:01:05  Bob on #0: rain at the gate   (1 hops, field,barn  SNR 8.0)"
+%% a repeater or router by name, or its hash with "?" if not known
+hop_name(#{<<"name">> := null, <<"hash">> := Hash}) -> [Hash, "?"];
+hop_name(#{<<"name">> := Name}) -> Name.
+
+%% A node's routes, per bridge: "barn: direct; field: Ridge > 77?"
+%% ("-" when no bridge has a route: the radios flood to reach it)
+route_text(Node) ->
+    case maps:get(<<"routes">>, Node, #{}) of
+        Routes when map_size(Routes) =:= 0 ->
+            "-";
+        Routes ->
+            lists:join("; ", [[Bridge, ": ", route(Route)]
+                              || {Bridge, Route} <- lists:sort(maps:to_list(Routes))])
+    end.
+
+%% one route: "Ridge > 77?" | "direct"
+route([]) -> "direct";
+route(Route) -> lists:join(" > ", [hop_name(H) || H <- Route]).
+
+%% "12:01:05  Bob on #0: rain at the gate   (direct, heard by barn,field)  SNR 8.0"
 describe(Rx, Names) ->
     Where = case is_channel(Rx) of
                 true -> io_lib:format("on #~p", [maps:get(<<"channel">>, Rx)]);

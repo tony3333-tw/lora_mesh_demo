@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from lora_mesh_client import MAX_TEXT_BYTES, MeshClient, Message, Node, is_meshcore, node_id, node_num
+from lora_mesh_client import Hop, MAX_TEXT_BYTES, MeshClient, Message, Node, is_meshcore, node_id, node_num
 
 # exactly what lora_mesh published on mesh/rx/!0a0b0c0d and mesh/node/!0a0b0c0d
 RX = '{"id":99,"text":"哈囉 from mesh","bridges":["hill","home"],"channel":0,"to":"!ffffffff","from":"!0a0b0c0d","rxq":{"hop_limit":2,"via_mqtt":false,"rx_snr":8.5,"rx_rssi":-90,"hop_start":3}}'
@@ -67,6 +67,32 @@ def test_meshcore_messages():
     unknown = Message.from_json({**json.loads(CORE_CHANNEL), "from": "?"})
     assert not unknown.is_known_sender
     assert Message.from_json(json.loads(RX)).protocol == "meshtastic"
+
+
+def test_paths():
+    # lora_mesh 0.3.2: repeaters (MeshCore), last relay (Meshtastic), routes
+    msg = Message.from_json({"from": "@c1c2c3c4c5c6", "to": "@5e5f60616263", "text": "pump on",
+                             "protocol": "meshcore",
+                             "rxq": {"hop_start": 2, "hop_limit": 0,
+                                     "path": [{"hash": "d1", "name": "Ridge"},
+                                              {"hash": "77", "name": None}],
+                                     "relay": None}})
+    assert [str(h) for h in msg.rx.path] == ["Ridge", "77?"]
+    assert msg.rx.path_text == "Ridge > 77?"
+    tastic = Message.from_json({"from": "!0a0b0c0d", "to": "!ffffffff", "text": "t",
+                                "rxq": {"hop_start": 3, "hop_limit": 2,
+                                        "relay": {"hash": "ee", "name": "Tower"}}})
+    assert tastic.rx.path is None and tastic.rx.path_text == "last relay Tower"
+    near = Message.from_json({"from": "@b1b2b3b4b5b6", "to": "!ffffffff", "text": "x",
+                              "rxq": {"path": []}})
+    assert near.rx.path == () and near.rx.path_text == "direct"
+    # 0.3.0 JSON has no path: still fine
+    old = Message.from_json({"from": "!0a0b0c0d", "to": "!ffffffff", "text": "x",
+                             "rxq": {"hop_start": 3, "hop_limit": 1}})
+    assert old.rx.path is None and old.rx.path_text == "2 hops"
+    node = Node.from_json({"num": (1 << 48) + 0xc1c2c3c4c5c6, "id": "@c1c2c3c4c5c6",
+                           "routes": {"field": [{"hash": "d1", "name": "Ridge"}], "barn": []}})
+    assert node.routes == {"field": (Hop("d1", "Ridge"),), "barn": ()}
 
 
 def test_meshcore_node():

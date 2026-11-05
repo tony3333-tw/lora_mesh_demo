@@ -5,8 +5,8 @@ Runs a live demo with fake radios, so no hardware is needed to try it.
 
 | Folder / file | What | Licence |
 |---|---|---|
-| `lora_mesh/` | Erlang server: radio bridges, router, node registry, MQTT connector (0.3) | GPL-3.0 (uses Meshtastic's protobufs) |
-| `lora_mesh_client/` | Python client: read messages and nodes, send texts (0.2.1) | MIT |
+| `lora_mesh/` | Erlang server: radio bridges, router, node registry, MQTT connector (0.3.2) | GPL-3.0 (uses Meshtastic's protobufs) |
+| `lora_mesh_client/` | Python client: read messages and nodes, send texts (0.2.2) | MIT |
 | `lora_mesh_examples/` | meshcore_py's examples rewritten in Erlang and LFE, as MQTT clients of lora_mesh | MIT |
 | `lora_demo.sh` | tmux demo: server, bot, manual send and MQTT in four panes | MIT |
 
@@ -19,6 +19,9 @@ The server and the client only talk over MQTT, so the client contains no GPL cod
 | `mesh/tx` | clients → server | a text to send into the mesh |
 
 Node ids: `!0a0b0c0d` for Meshtastic, `@a1a2a3a4a5a6` for MeshCore.
+
+Since 0.3.2 every message also says which repeaters (MeshCore) or which last router (Meshtastic)
+it came through, and every MeshCore node how each bridge reaches it: see `lora_mesh/PATHS.md`.
 
 ## How the demo is laid out
 
@@ -86,5 +89,6 @@ cd lora_mesh_client && . .venv/bin/activate && pip install pytest && python -m p
 
 - `CHANGELOG.md`: what changed in each tagged version
 - `lora_mesh/README.md`: the server in detail (bridges, deduplication, configuration, releases)
+- `lora_mesh/PATHS.md`: repeater paths, Meshtastic relays and routes (0.3.2)
 - `lora_mesh_client/README.md`: the Python API and examples
 - `lora_mesh_examples/README.md`: the Erlang and LFE examples (`lme contacts`, `lme chat --lfe`, ...)

@@ -2,6 +2,21 @@
 
 What changed in each tagged version of this repository. The newest is first.
 
+## 0.3.2 — 2026-11-04
+
+### Added
+
+- lora_mesh 0.3.2: repeater paths (MeshCore) and the last relay (Meshtastic) in every
+  message's `rxq`, and each bridge's route to a node in `mesh/node/<id>`. See
+  `lora_mesh/PATHS.md`.
+- lora_mesh_client 0.2.2: `msg.rx.path`, `msg.rx.relay`, `msg.rx.path_text`.
+
+### Changed
+
+- `lora_mesh_examples/` shows the paths: `pingbot` answers with the repeaters a message came
+  through, `contacts` lists each gateway's route to a node, and `monitor` reports routes
+  changing. The examples still work with lora_mesh 0.3.0, without the repeater names.
+
 ## 0.3.1 — 2026-11-03
 
 ### Added

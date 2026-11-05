@@ -3,7 +3,7 @@
 ;;; The LFE twin of ex_pingbot.erl:
 ;;;
 ;;;   Bob on #0: ping?
-;;;   me  on #0: @[Bob] Pong 🏓(1 hops, field)
+;;;   me  on #0: @[Bob] Pong 🏓(Ridge, heard by field)
 ;;;
 ;;;   lme pingbot --lfe
 ;;;   lme pingbot --lfe --channel 1

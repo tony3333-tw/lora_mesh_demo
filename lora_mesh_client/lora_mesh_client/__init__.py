@@ -6,6 +6,7 @@ from .models import (
     MAX_TEXT_BYTES,
     MESHCORE_MAX_TEXT_BYTES,
     Heard,
+    Hop,
     Message,
     Node,
     Position,
@@ -22,6 +23,7 @@ __all__ = [
     "Position",
     "Reception",
     "Heard",
+    "Hop",
     "node_id",
     "node_num",
     "BROADCAST",
@@ -30,4 +32,4 @@ __all__ = [
     "is_meshcore",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
