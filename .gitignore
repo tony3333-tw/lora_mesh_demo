@@ -6,6 +6,10 @@ lora_mesh/erl_crash.dump
 lora_mesh/src/meshtastic_pb.erl
 lora_mesh/include/meshtastic_pb.hrl
 
+lora_mesh_examples/_build/
+lora_mesh_examples/rebar.lock
+lora_mesh_examples/erl_crash.dump
+
 # Python
 lora_mesh_client/.venv/
 __pycache__/

@@ -1,0 +1,10 @@
+{application, lora_mesh_examples,
+ [{description, "Erlang and LFE examples for lora_mesh, after meshcore_py's examples"},
+  {vsn, "0.3.0"},
+  {registered, []},
+  {applications, [kernel,
+                  stdlib,
+                  emqtt]},
+  {env, []},
+  {licenses, ["MIT"]},
+  {links, []}]}.
