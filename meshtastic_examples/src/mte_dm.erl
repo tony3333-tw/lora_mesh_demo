@@ -1,11 +1,12 @@
 %%
-%% Send one direct message and wait for its ACK, like
-%% send-direct-message.py (which sends with wantAck and waits).
+%% Send one direct message, like send-direct-message.py.
 %%
 %%   mte dm -d "Hill top" -m "Test Message"
-%%   mte dm -d '!60c0ffee' -m hello --wait 30
+%%   mte dm -d '!0a0b0c0d' -m hello --wait 30
 %%
-%% Then it prints what that node sends us for --wait seconds (10).
+%% send-direct-message.py waits for the radio's ACK. lora_mesh 0.3 does
+%% not pass ACKs on to MQTT, so this prints what that node sends back
+%% for --wait seconds (10) instead. (lora_mesh 0.4: the ACK.)
 %%
 -module(mte_dm).
 
@@ -13,26 +14,29 @@
 
 run(Opts) ->
     C = mtc:connect(Opts),
+    Nodes = mtc:nodes(C, Opts),
     Dest = mtc:dest(C, Opts),
+    Name = mtc:name(mtc:names(Nodes), Dest),
     Text = maps:get(message, Opts, "Test Message"),
-    Id = mtc:send_text(C, Text, #{to => Dest, want_ack => true, want_response => true}),
-    io:format("Sent \"~ts\" to ~ts, waiting for the ACK...~n", [Text, mtc:name(C, Dest)]),
-    case mtc:ack(C, Id, 60000) of
-        ok -> io:format("ACK: ~ts has it~n", [mtc:name(C, Dest)]);
-        {error, Reason} -> io:format("NAK: ~s~n", [Reason]);
-        timeout -> io:format("no ACK within 60 s~n");
-        closed -> io:format("the radio closed the connection~n")
+    %% listen first, so a fast answer is not missed
+    ok = mtc:subscribe(C, rx),
+    ok = mtc:send_text(C, Text, #{to => Dest}),
+    Wait = maps:get(wait, Opts, 10),
+    io:format("Sent \"~ts\" to ~ts, waiting ~p s for an answer...~n", [Text, Name, Wait]),
+    case answers(C, Dest, Name, mtc:deadline(Wait * 1000), 0) of
+        0 -> io:format("No answer (lora_mesh 0.3 does not report the ACK; "
+                       "the message may still have arrived)~n");
+        _ -> ok
     end,
-    answers(C, Dest, mtc:deadline(maps:get(wait, Opts, 10) * 1000)),
-    mtc:close(C).
+    mtc:disconnect(C).
 
-answers(C, Dest, Deadline) ->
+answers(C, Dest, Name, Deadline, Count) ->
     case mtc:next(C, mtc:left(Deadline)) of
-        {packet, #{from := Dest, decoded := #{portnum := 'TEXT_MESSAGE_APP', text := Text}}} ->
-            io:format("~ts: ~ts~n", [mtc:name(C, Dest), Text]),
-            answers(C, Dest, Deadline);
-        {packet, _Other} ->
-            answers(C, Dest, Deadline);
-        _TimeoutOrClosed ->
-            ok
+        {rx, #{<<"from">> := Dest, <<"text">> := Text}} ->
+            io:format("~ts: ~ts~n", [Name, Text]),
+            answers(C, Dest, Name, Deadline, Count + 1);
+        timeout ->
+            Count;
+        _Other ->
+            answers(C, Dest, Name, Deadline, Count)
     end.

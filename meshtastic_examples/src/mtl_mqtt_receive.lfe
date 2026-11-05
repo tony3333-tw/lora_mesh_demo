@@ -1,46 +1,73 @@
 ;;;
-;;; Print every packet published to a Meshtastic MQTT broker, decrypted
-;;; with the channel key, like MQTT/receive-mqtt-packets.py.
-;;; The LFE twin of mte_mqtt_receive.erl.
+;;; Print everything lora_mesh publishes, like
+;;; MQTT/receive-mqtt-packets.py. The LFE twin of mte_mqtt_receive.erl:
+;;; plain emqtt and json, without mtc.
 ;;;
-;;;   mte mqtt-receive --lfe                        mqtt.meshtastic.org, msh/US/2/e/
-;;;   mte mqtt-receive --lfe --root msh/TW/2/e/
-;;;   mte mqtt-receive --lfe --channel-name farm --key BASE64KEY
+;;;   mte mqtt-receive --lfe                     mesh/rx/# and mesh/node/#
+;;;   mte mqtt-receive --lfe --topic 'mesh/rx/#'
 ;;;
 
 (defmodule mtl_mqtt_receive
-  (export (run 1)))
+  (export (run 1)
+          (connect 1)
+          (print 2)))
 
 (defun run (opts)
-  (let* ((key (mtq:key (maps:get 'key opts "AQ==")))
-         (root (mtq:root opts "msh/US/2/e/"))
+  (let* ((prefix (maps:get 'prefix opts "mesh"))
          (topics (maps:get 'topics opts
-                           (list (++ root "PKI/#")
-                                 (++ root (maps:get 'channel_name opts "LongFast") "/#"))))
-         (conn (mtq:connect opts)))
+                           (list (++ prefix "/rx/#")
+                                 (++ prefix "/node/#"))))
+         (conn (connect opts)))
     (io:format "Connected to MQTT broker!~n")
     (lists:foreach
      (lambda (topic)
-       (mtq:subscribe conn topic)
+       (emqtt:subscribe conn (unicode:characters_to_binary topic) 0)
        (io:format "Subscribed to topic: ~ts~n" (list topic)))
      topics)
-    (loop key)))
+    (loop)))
 
-(defun loop (key)
+(defun loop ()
   (receive
-    ((tuple 'publish (map 'topic topic 'payload payload))
-     (case (mtq:open payload key)
-       ((tuple 'ok envelope)
-        (case (maps:find 'gateway_id envelope)
-          ((tuple 'ok gateway) (io:format "Gateway ID: ~ts~n" (list gateway)))
-          ('error 'ok))
-        (let ((packet (maps:get 'packet envelope)))
-          (if (maps:get 'decrypt_failed packet 'false)
-            (io:format "Decryption failed; retaining original encrypted payload~n"))
-          (io:format "~p~n~n" (list packet))))
-       ((tuple 'error _)
-        (io:format "~ts: not a ServiceEnvelope (~p bytes)~n~n"
-                   (list topic (byte_size payload)))))
-     (loop key))
+    ((tuple 'publish (map 'topic topic 'payload payload 'retain retain))
+     (print topic payload retain)
+     (loop))
     ((tuple 'disconnected reason-code _props)
      (io:format "disconnected from the broker (~p)~n" (list reason-code)))))
+
+;; the broker lora_mesh uses: --host (localhost) --port (1883)
+;; --username --password. Raises (error (tuple 'mqtt_connect reason)).
+(defun connect (opts)
+  (application:ensure_all_started 'emqtt)
+  (let* ((login (case opts
+                  ((map 'username u 'password p)
+                   (list (tuple 'username (unicode:characters_to_binary u))
+                         (tuple 'password (unicode:characters_to_binary p))))
+                  (_ ())))
+         (args (list* (tuple 'host (maps:get 'host opts "localhost"))
+                      (tuple 'port (maps:get 'port opts 1883))
+                      (tuple 'clean_start 'true)
+                      login))
+         ((tuple 'ok conn) (emqtt:start_link args)))
+    (unlink conn)
+    (case (emqtt:connect conn)
+      ((tuple 'ok _)
+       (link conn)
+       conn)
+      ((tuple 'error reason)
+       (catch (emqtt:stop conn))
+       (error (tuple 'mqtt_connect reason))))))
+
+;; one message: the topic, then its JSON indented
+(defun print (topic payload)
+  (print topic payload 'false))
+
+(defun print
+  ((topic #"" _retain)
+   (io:format "~ts (removed)~n~n" (list topic)))
+  ((topic payload retain)
+   (let ((note (if retain " (retained)" ""))
+         (body (try
+                 (json:format (json:decode payload))
+                 (catch
+                   ((tuple _ _ _) payload)))))
+     (io:format "~ts~s~n~ts~n~n" (list topic note body)))))

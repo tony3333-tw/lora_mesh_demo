@@ -1,5 +1,5 @@
 %%
-%% Print every text message the radio receives, like print-messages.py.
+%% Print every text message lora_mesh receives, like print-messages.py.
 %% With --seconds S it stops after S seconds, like get-all-messages.py
 %% (which listens for 10 seconds).
 %%
@@ -12,22 +12,21 @@
 
 run(Opts) ->
     C = mtc:connect(Opts),
+    ok = mtc:subscribe(C, rx),
     Deadline = case maps:find(seconds, Opts) of
                    {ok, S} -> mtc:deadline(S * 1000);
                    error -> infinity
                end,
     loop(C, Deadline),
-    mtc:close(C).
+    mtc:disconnect(C).
 
 loop(C, Deadline) ->
     case mtc:next(C, mtc:left(Deadline)) of
-        {packet, #{decoded := #{portnum := 'TEXT_MESSAGE_APP', text := Text}}} ->
+        {rx, #{<<"text">> := Text}} ->
             io:format("~ts~n", [Text]),
             loop(C, Deadline);
-        {packet, _Other} ->
+        {node, _} ->
             loop(C, Deadline);
-        closed ->
-            io:format("the radio closed the connection~n");
         timeout ->
             ok
     end.

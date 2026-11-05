@@ -1,8 +1,13 @@
 %%
-%% List the nodes in the radio's node database, like print-nodedb.py.
+%% List the nodes lora_mesh knows, like print-nodedb.py.
 %%
 %%   mte nodedb
 %%   mte nodedb --json
+%%   mte nodedb --all          MeshCore nodes too
+%%
+%% print-nodedb.py lists one radio's node database. lora_mesh's list is
+%% the nodes every bridge has heard, with which bridges heard each one.
+%% It has no SNR, hops or channel use per node yet (lora_mesh 0.4).
 %%
 -module(mte_nodedb).
 
@@ -10,51 +15,44 @@
 
 run(Opts) ->
     C = mtc:connect(Opts),
-    Nodes = mtc:nodes(C),
+    Nodes = mtc:nodes(C, Opts),
     case maps:get(json, Opts, false) of
-        true -> io:format("~ts~n", [mtc:json(Nodes)]);
+        true -> io:format("~ts~n", [json:format(Nodes)]);
         false -> lists:foreach(fun print_node/1, Nodes)
     end,
-    mtc:close(C).
+    mtc:disconnect(C).
 
 print_node(Node) ->
-    User = maps:get(user, Node, #{}),
-    io:format("Node Num: ~p~n", [maps:get(num, Node)]),
-    io:format("Node ID: ~ts~n", [maps:get(id, User, <<"?">>)]),
-    io:format("Long Name: ~ts~n", [maps:get(long_name, User, <<"">>)]),
-    io:format("Short Name: ~ts~n", [maps:get(short_name, User, <<"">>)]),
-    io:format("Hardware Model: ~s~n", [maps:get(hw_model, User, 'UNSET')]),
-    field("Role", User, role),
-    case User of
-        #{macaddr := Mac} -> io:format("MAC Address: ~s~n", [mac(Mac)]);
-        _ -> ok
-    end,
-    case User of
-        #{public_key := Key} -> io:format("Public Key: ~s~n", [base64:encode(Key)]);
-        _ -> ok
-    end,
-    field("SNR", Node, snr),
-    field("Last Heard", Node, last_heard),
-    field("Hops Away", Node, hops_away),
-    Pos = maps:get(position, Node, #{}),
-    field("Latitude", Pos, latitude),
-    field("Longitude", Pos, longitude),
-    field("Altitude", Pos, altitude),
-    field("Time", Pos, time),
-    Metrics = maps:get(device_metrics, Node, #{}),
-    field("Battery Level", Metrics, battery_level),
-    field("Voltage", Metrics, voltage),
-    field("Channel Utilization", Metrics, channel_utilization),
-    field("Air Util Tx", Metrics, air_util_tx),
-    field("Uptime Seconds", Metrics, uptime_seconds),
+    field("Node Num", Node, <<"num">>),
+    field("Node ID", Node, <<"id">>),
+    field("Long Name", Node, <<"long_name">>),
+    field("Short Name", Node, <<"short_name">>),
+    field("Hardware Model", Node, <<"hw_model">>),
+    field("Role", Node, <<"role">>),
+    Pos = case maps:get(<<"position">>, Node, null) of
+              null -> #{};
+              P -> P
+          end,
+    field("Latitude", Pos, <<"latitude">>),
+    field("Longitude", Pos, <<"longitude">>),
+    field("Altitude", Pos, <<"altitude">>),
+    field("Time", Pos, <<"time">>),
+    field("Battery Level", Node, <<"battery_level">>),
+    field("Voltage", Node, <<"voltage">>),
+    field("Last Heard", Node, <<"last_heard">>),
+    HeardBy = maps:get(<<"heard_by">>, Node, #{}),
+    [io:format("Heard By: ~ts (SNR ~ts)~n",
+               [Bridge, show(maps:get(<<"rx_snr">>, maps:get(<<"rxq">>, Heard)))])
+     || {Bridge, Heard} <- lists:sort(maps:to_list(HeardBy))],
     io:format("~n~n").
 
-%% print a line only when the field is there, as print-nodedb.py does
+%% print a line only when the field has a value, as print-nodedb.py does
 field(Label, Map, Key) ->
-    case Map of
-        #{Key := V} -> io:format("~s: ~ts~n", [Label, mtc:show(V)]);
-        _ -> ok
+    case maps:get(Key, Map, null) of
+        null -> ok;
+        V -> io:format("~s: ~ts~n", [Label, show(V)])
     end.
 
-mac(Mac) ->
-    lists:join(":", [io_lib:format("~2.16.0b", [B]) || <<B>> <= Mac]).
+show(V) when is_binary(V) -> V;
+show(V) when is_float(V) -> float_to_binary(V, [short]);
+show(V) -> io_lib:format("~p", [V]).

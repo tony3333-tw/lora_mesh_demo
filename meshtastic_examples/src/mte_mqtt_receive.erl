@@ -1,56 +1,80 @@
 %%
-%% Print every packet published to a Meshtastic MQTT broker, decrypted
-%% with the channel key, like MQTT/receive-mqtt-packets.py. No radio is
-%% needed: radios with their MQTT module on publish what they hear.
+%% Print everything lora_mesh publishes, like MQTT/receive-mqtt-packets.py
+%% prints everything on a Meshtastic MQTT topic. Plain emqtt and json,
+%% without mtc: what any MQTT client sees of lora_mesh.
 %%
-%%   mte mqtt-receive                               mqtt.meshtastic.org, msh/US/2/e/
-%%   mte mqtt-receive --root msh/TW/2/e/            Taiwan's topics
-%%   mte mqtt-receive --channel-name farm --key BASE64KEY
-%%   mte mqtt-receive --broker localhost --topic 'msh/#'
+%%   mte mqtt-receive                          mesh/rx/# and mesh/node/#
+%%   mte mqtt-receive --topic 'mesh/rx/#'
+%%   mte mqtt-receive --host 192.168.1.10 --prefix lab
 %%
-%% Subscribes to <root>PKI/# and <root><channel name>/# unless --topic
-%% is given. Direct messages (PKI) cannot be decrypted with a channel
-%% key: they are printed encrypted.
+%% receive-mqtt-packets.py gets encrypted protobuf from a public broker
+%% and decrypts it with the channel key. lora_mesh publishes JSON to
+%% your own broker: the radios have already decrypted it.
 %%
 -module(mte_mqtt_receive).
 
 -export([run/1]).
+-export([connect/1]).
+-export([print/2]).
 
 run(Opts) ->
-    Key = mtq:key(maps:get(key, Opts, "AQ==")),
-    Root = mtq:root(Opts, "msh/US/2/e/"),
-    Topics = maps:get(topics, Opts,
-                      [Root ++ "PKI/#", Root ++ maps:get(channel_name, Opts, "LongFast") ++ "/#"]),
-    Conn = mtq:connect(Opts),
+    Prefix = maps:get(prefix, Opts, "mesh"),
+    Topics = maps:get(topics, Opts, [Prefix ++ "/rx/#", Prefix ++ "/node/#"]),
+    Conn = connect(Opts),
     io:format("Connected to MQTT broker!~n"),
     [begin
-         ok = mtq:subscribe(Conn, Topic),
+         {ok, _, _} = emqtt:subscribe(Conn, unicode:characters_to_binary(Topic), 0),
          io:format("Subscribed to topic: ~ts~n", [Topic])
      end
      || Topic <- Topics],
-    loop(Key).
+    loop().
 
-loop(Key) ->
+loop() ->
     receive
-        {publish, #{topic := Topic, payload := Payload}} ->
-            case mtq:open(Payload, Key) of
-                {ok, Envelope} ->
-                    case Envelope of
-                        #{gateway_id := Gateway} -> io:format("Gateway ID: ~ts~n", [Gateway]);
-                        _ -> ok
-                    end,
-                    Packet = maps:get(packet, Envelope),
-                    case Packet of
-                        #{decrypt_failed := true} ->
-                            io:format("Decryption failed; retaining original encrypted payload~n");
-                        _ ->
-                            ok
-                    end,
-                    io:format("~p~n~n", [Packet]);
-                {error, _} ->
-                    io:format("~ts: not a ServiceEnvelope (~p bytes)~n~n", [Topic, byte_size(Payload)])
-            end,
-            loop(Key);
+        {publish, #{topic := Topic, payload := Payload, retain := Retain}} ->
+            print(Topic, Payload, Retain),
+            loop();
         {disconnected, ReasonCode, _Props} ->
             io:format("disconnected from the broker (~p)~n", [ReasonCode])
     end.
+
+%% the broker lora_mesh uses: --host (localhost) --port (1883)
+%% --username --password. Raises error({mqtt_connect, Reason}).
+connect(Opts) ->
+    {ok, _} = application:ensure_all_started(emqtt),
+    Login = case Opts of
+                #{username := U, password := P} ->
+                    [{username, unicode:characters_to_binary(U)},
+                     {password, unicode:characters_to_binary(P)}];
+                _ ->
+                    []
+            end,
+    {ok, Conn} = emqtt:start_link([{host, maps:get(host, Opts, "localhost")},
+                                   {port, maps:get(port, Opts, 1883)},
+                                   {clean_start, true}
+                                   | Login]),
+    unlink(Conn),
+    case emqtt:connect(Conn) of
+        {ok, _} ->
+            link(Conn),
+            Conn;
+        {error, Reason} ->
+            catch emqtt:stop(Conn),
+            error({mqtt_connect, Reason})
+    end.
+
+%% one message: the topic, then its JSON indented
+print(Topic, Payload) ->
+    print(Topic, Payload, false).
+
+print(Topic, <<>>, _Retain) ->
+    io:format("~ts (removed)~n~n", [Topic]);
+print(Topic, Payload, Retain) ->
+    Note = case Retain of
+               true -> " (retained)";
+               false -> ""
+           end,
+    Body = try json:format(json:decode(Payload))
+           catch _:_ -> Payload
+           end,
+    io:format("~ts~s~n~ts~n~n", [Topic, Note, Body]).

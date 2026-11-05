@@ -1,9 +1,10 @@
 ;;;
-;;; List the nodes in the radio's node database, like print-nodedb.py.
-;;; The LFE twin of mte_nodedb.erl.
+;;; List the nodes lora_mesh knows, like print-nodedb.py. The LFE twin
+;;; of mte_nodedb.erl.
 ;;;
 ;;;   mte nodedb --lfe
 ;;;   mte nodedb --lfe --json
+;;;   mte nodedb --lfe --all       MeshCore nodes too
 ;;;
 
 (defmodule mtl_nodedb
@@ -11,49 +12,45 @@
 
 (defun run (opts)
   (let* ((c (mtc:connect opts))
-         (nodes (mtc:nodes c)))
+         (nodes (mtc:nodes c opts)))
     (if (maps:get 'json opts 'false)
-      (io:format "~ts~n" (list (mtc:json nodes)))
+      (io:format "~ts~n" (list (json:format nodes)))
       (lists:foreach (fun print-node 1) nodes))
-    (mtc:close c)))
+    (mtc:disconnect c)))
 
 (defun print-node (node)
-  (let ((user (maps:get 'user node (map)))
-        (pos (maps:get 'position node (map)))
-        (metrics (maps:get 'device_metrics node (map))))
-    (io:format "Node Num: ~p~n" (list (maps:get 'num node)))
-    (io:format "Node ID: ~ts~n" (list (maps:get 'id user #"?")))
-    (io:format "Long Name: ~ts~n" (list (maps:get 'long_name user #"")))
-    (io:format "Short Name: ~ts~n" (list (maps:get 'short_name user #"")))
-    (io:format "Hardware Model: ~s~n" (list (maps:get 'hw_model user 'UNSET)))
-    (field "Role" user 'role)
-    (case (maps:find 'macaddr user)
-      ((tuple 'ok mac) (io:format "MAC Address: ~s~n" (list (mac mac))))
-      ('error 'ok))
-    (case (maps:find 'public_key user)
-      ((tuple 'ok key) (io:format "Public Key: ~s~n" (list (base64:encode key))))
-      ('error 'ok))
-    (field "SNR" node 'snr)
-    (field "Last Heard" node 'last_heard)
-    (field "Hops Away" node 'hops_away)
-    (field "Latitude" pos 'latitude)
-    (field "Longitude" pos 'longitude)
-    (field "Altitude" pos 'altitude)
-    (field "Time" pos 'time)
-    (field "Battery Level" metrics 'battery_level)
-    (field "Voltage" metrics 'voltage)
-    (field "Channel Utilization" metrics 'channel_utilization)
-    (field "Air Util Tx" metrics 'air_util_tx)
-    (field "Uptime Seconds" metrics 'uptime_seconds)
-    (io:format "~n~n")))
+  (field "Node Num" node #"num")
+  (field "Node ID" node #"id")
+  (field "Long Name" node #"long_name")
+  (field "Short Name" node #"short_name")
+  (field "Hardware Model" node #"hw_model")
+  (field "Role" node #"role")
+  (let ((pos (case (maps:get #"position" node 'null)
+               ('null (map))
+               (p p))))
+    (field "Latitude" pos #"latitude")
+    (field "Longitude" pos #"longitude")
+    (field "Altitude" pos #"altitude")
+    (field "Time" pos #"time"))
+  (field "Battery Level" node #"battery_level")
+  (field "Voltage" node #"voltage")
+  (field "Last Heard" node #"last_heard")
+  (lists:foreach
+   (lambda (heard)
+     (let (((tuple bridge info) heard))
+       (io:format "Heard By: ~ts (SNR ~ts)~n"
+                  (list bridge
+                        (show (maps:get #"rx_snr" (maps:get #"rxq" info)))))))
+   (lists:sort (maps:to_list (maps:get #"heard_by" node (map)))))
+  (io:format "~n~n"))
 
-;; print a line only when the field is there, as print-nodedb.py does
+;; print a line only when the field has a value, as print-nodedb.py does
 (defun field (label m key)
-  (case (maps:find key m)
-    ((tuple 'ok v) (io:format "~s: ~ts~n" (list label (mtc:show v))))
-    ('error 'ok)))
+  (case (maps:get key m 'null)
+    ('null 'ok)
+    (v (io:format "~s: ~ts~n" (list label (show v))))))
 
-(defun mac (mac)
-  (lists:join ":"
-              (lists:map (lambda (b) (io_lib:format "~2.16.0b" (list b)))
-                         (binary_to_list mac))))
+(defun show
+  ((v) (when (is_binary v)) v)
+  ((v) (when (is_float v)) (float_to_binary v '(short)))
+  ((v) (io_lib:format "~p" (list v))))

@@ -20,5 +20,5 @@
                   ((map 'base64 b64) (base64:decode b64))
                   (_ (sample))))
          (type (list_to_atom (maps:get 'type opts "telemetry")))
-         (decoded (mtc:decode bytes type)))
-    (io:format "~p~n" (list (mtc:compact decoded type)))))
+         (decoded (mtp:decode bytes type)))
+    (io:format "~p~n" (list (mtp:compact decoded type)))))

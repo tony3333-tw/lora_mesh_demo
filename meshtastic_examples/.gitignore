@@ -3,4 +3,3 @@ rebar.lock
 erl_crash.dump
 src/mt_pb.erl
 include/mt_pb.hrl
-received_data.json

@@ -1,36 +1,29 @@
 ;;;
-;;; A pretend node on MQTT, like MQTT/mqtt-client.py: publish a node
-;;; info, a position and a text message, then print every packet on the
-;;; channel's topic. The LFE twin of mte_mqtt_client.erl.
+;;; Both at once, like MQTT/mqtt-client.py: send a text (as mqtt-send),
+;;; then print every text message lora_mesh publishes (as mqtt-receive).
+;;; The LFE twin of mte_mqtt_client.erl. Ctrl-C ends.
 ;;;
-;;;   mte mqtt-client --lfe
-;;;   mte mqtt-client --lfe --root msh/TW/2/e/ -m "hello"
+;;;   mte mqtt-client --lfe -m "hello"
 ;;;
 
 (defmodule mtl_mqtt_client
   (export (run 1)))
 
 (defun run (opts)
-  (let* ((conn (mtq:connect opts))
-         (bot (mtl_mqtt_send:bot opts "msh/US/Bots/2/e/"))
-         (subscribe (++ (mtq:root opts "msh/US/Bots/2/e/")
-                        (maps:get 'channel_name bot)
-                        "/#")))
-    (mtq:subscribe conn subscribe)
+  (let* ((conn (mtl_mqtt_receive:connect opts))
+         (prefix (maps:get 'prefix opts "mesh"))
+         (subscribe (++ prefix "/rx/#"))
+         (publish (++ prefix "/tx")))
+    (emqtt:subscribe conn (list_to_binary subscribe) 0)
     (io:format "Subscribe Topic is: ~s~nPublish Topic is: ~s~n~n"
-               (list subscribe (maps:get 'topic bot)))
-    ;; send from another process: received packets print meanwhile
-    (spawn_link (lambda () (mtl_mqtt_send:send-all conn bot)))
-    (loop (maps:get 'key bot))))
+               (list subscribe publish))
+    (mtl_mqtt_send:send conn publish (mtl_mqtt_send:tx opts))
+    (loop)))
 
-(defun loop (key)
+(defun loop ()
   (receive
-    ((tuple 'publish (map 'payload payload))
-     (case (mtq:open payload key)
-       ((tuple 'ok (map 'packet packet))
-        (io:format "~p~n~n" (list packet)))
-       ((tuple 'error reason)
-        (io:format "*** ServiceEnvelope: ~p~n" (list reason))))
-     (loop key))
+    ((tuple 'publish (map 'topic topic 'payload payload))
+     (mtl_mqtt_receive:print topic payload)
+     (loop))
     ((tuple 'disconnected reason-code _props)
      (io:format "disconnected from the broker (~p)~n" (list reason-code)))))

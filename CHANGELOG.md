@@ -2,6 +2,30 @@
 
 What changed in each tagged version of this repository. The newest is first.
 
+## 0.3.4 — 2026-11-05
+
+### Changed
+
+- `meshtastic_examples/` 0.2.0 uses **lora_mesh as its backend**: the examples are MQTT
+  clients of lora_mesh, on your own broker, and nothing goes to mqtt.meshtastic.org. lora_mesh
+  keeps the only connection to each radio, so the examples no longer take a radio away from
+  it.
+- 10 examples work with lora_mesh 0.3 as it is: `messages`, `autoresponder`, `chat`, `dm`,
+  `nodedb`, `decode`, `protos`, `mqtt-receive`, `mqtt-send`, `mqtt-client`.
+- `dm` waits for a reply from the node instead of the ACK, because lora_mesh 0.3 does not
+  pass ACKs on.
+
+### Removed
+
+- The direct radio client, the fake radio, the Meshtastic MQTT encryption, and the 14
+  examples that need topics lora_mesh does not have yet. They are in 0.3.3. The plan for
+  bringing them back with lora_mesh 0.4 is in `meshtastic_examples/README.md`.
+
+### Tests
+
+- 7 eunit tests (`cd meshtastic_examples && rebar3 eunit`); every example was run against
+  lora_mesh's Meshtastic demo in both languages.
+
 ## 0.3.3 — 2026-11-05
 
 ### Added

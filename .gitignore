@@ -16,7 +16,6 @@ meshtastic_examples/erl_crash.dump
 # generated from meshtastic_examples/proto/ on every build
 meshtastic_examples/src/mt_pb.erl
 meshtastic_examples/include/mt_pb.hrl
-meshtastic_examples/received_data.json
 
 # Python
 lora_mesh_client/.venv/

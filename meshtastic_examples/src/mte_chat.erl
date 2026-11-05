@@ -13,14 +13,16 @@
 
 run(Opts) ->
     C = mtc:connect(Opts),
+    Names = mtc:names(mtc:nodes(C, Opts)),
     Send = case maps:is_key(dest, Opts) of
                true -> #{to => mtc:dest(C, Opts)};
                false -> #{channel => maps:get(channel, Opts, 0)}
            end,
+    ok = mtc:subscribe(C, rx),
     Self = self(),
     spawn_link(fun() -> read_lines(Self) end),
-    loop(C, Send),
-    mtc:close(C).
+    loop(C, Names, Send),
+    mtc:disconnect(C).
 
 %% stdin is read by its own process, so messages print while we wait
 read_lines(Parent) ->
@@ -34,22 +36,23 @@ read_lines(Parent) ->
             read_lines(Parent)
     end.
 
-loop(C, Send) ->
+loop(C, Names, Send) ->
     receive
         {line, eof} ->
             ok;
         {line, "quit"} ->
             ok;
         {line, ""} ->
-            loop(C, Send);
+            loop(C, Names, Send);
         {line, Text} ->
-            mtc:send_text(C, Text, Send),
-            loop(C, Send);
-        {mtc, C, packet, #{from := From, decoded := #{portnum := 'TEXT_MESSAGE_APP', text := Text}}} ->
-            io:format("~ts: ~ts~n> ", [mtc:name(C, From), Text]),
-            loop(C, Send);
-        {mtc, C, packet, _Other} ->
-            loop(C, Send);
-        {mtc, C, closed, _} ->
-            io:format("the radio closed the connection~n")
+            ok = mtc:send_text(C, Text, Send),
+            loop(C, Names, Send);
+        {publish, Msg} ->
+            case mtc:decode(C, Msg) of
+                {rx, Rx} ->
+                    io:format("~ts: ~ts~n> ", [mtc:sender(Rx, Names), maps:get(<<"text">>, Rx)]);
+                _Other ->
+                    ok
+            end,
+            loop(C, Names, Send)
     end.

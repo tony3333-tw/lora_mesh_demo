@@ -20,5 +20,5 @@ run(Opts) ->
                 _ -> ?SAMPLE
             end,
     Type = list_to_atom(maps:get(type, Opts, "telemetry")),
-    Map = mtc:decode(Bytes, Type),
-    io:format("~p~n", [mtc:compact(Map, Type)]).
+    Map = mtp:decode(Bytes, Type),
+    io:format("~p~n", [mtp:compact(Map, Type)]).
