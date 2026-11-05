@@ -1,0 +1,7 @@
+%% Build emqtt without its QUIC NIF (quicer).
+%% emqtt's own rebar.config.script reads this variable, and rebar3
+%% evaluates our script before the deps' scripts. This works only because
+%% emqtt is a git dependency (see rebar.config): Hex packages use the
+%% dependency list stored on Hex, which includes quicer.
+true = os:putenv("BUILD_WITHOUT_QUIC", "1"),
+CONFIG.

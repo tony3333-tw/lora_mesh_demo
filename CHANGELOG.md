@@ -2,6 +2,25 @@
 
 What changed in each tagged version of this repository. The newest is first.
 
+## 0.3.3 — 2026-11-05
+
+### Added
+
+- `meshtastic_examples/` 0.1.0: the examples of
+  [Meshtastic-Python-Examples](https://github.com/pdxlocations/Meshtastic-Python-Examples)
+  in Erlang and LFE, run with `mte`: 24 examples covering the 42 Python scripts. They talk
+  to one radio directly (TCP port 4403), or to a Meshtastic MQTT broker.
+- `mte fake-radio`: a pretend radio with a four-node mesh, to try the examples without
+  hardware.
+- 9 eunit tests (`cd meshtastic_examples && rebar3 eunit`).
+
+### Notes
+
+- A radio serves one app connection at a time, so these examples knock lora_mesh off a radio
+  it is using: use a radio lora_mesh is not using, or stop lora_mesh first.
+- `admin-keys` ships no default keys, and `mqtt-send` sends "Hello from Erlang" as its test
+  text.
+
 ## 0.3.2 — 2026-11-04
 
 ### Added

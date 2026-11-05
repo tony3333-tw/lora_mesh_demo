@@ -1,0 +1,11 @@
+{application, meshtastic_examples,
+ [{description, "Erlang and LFE examples for Meshtastic radios, after pdxlocations' Meshtastic-Python-Examples"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [kernel,
+                  stdlib,
+                  crypto,
+                  emqtt]},
+  {env, []},
+  {licenses, ["GPL-3.0"]},
+  {links, []}]}.

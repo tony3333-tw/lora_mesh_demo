@@ -8,6 +8,7 @@ Runs a live demo with fake radios, so no hardware is needed to try it.
 | `lora_mesh/` | Erlang server: radio bridges, router, node registry, MQTT connector (0.3.2) | GPL-3.0 (uses Meshtastic's protobufs) |
 | `lora_mesh_client/` | Python client: read messages and nodes, send texts (0.2.2) | MIT |
 | `lora_mesh_examples/` | meshcore_py's examples rewritten in Erlang and LFE, as MQTT clients of lora_mesh | MIT |
+| `meshtastic_examples/` | Meshtastic-Python-Examples rewritten in Erlang and LFE: talk to one radio over TCP, or to a Meshtastic MQTT broker; with a fake radio | GPL-3.0 |
 | `lora_demo.sh` | tmux demo: server, bot, manual send and MQTT in four panes | MIT |
 
 The server and the client only talk over MQTT, so the client contains no GPL code:
@@ -82,6 +83,7 @@ Other options: `DEMO=mixed ./lora_demo.sh` runs a mixed MeshCore + Meshtastic de
 
 ```sh
 cd lora_mesh && rebar3 eunit                                   # Erlang
+cd meshtastic_examples && rebar3 eunit                         # Erlang (the Meshtastic examples)
 cd lora_mesh_client && . .venv/bin/activate && pip install pytest && python -m pytest -v tests
 ```
 
@@ -92,3 +94,4 @@ cd lora_mesh_client && . .venv/bin/activate && pip install pytest && python -m p
 - `lora_mesh/PATHS.md`: repeater paths, Meshtastic relays and routes (0.3.2)
 - `lora_mesh_client/README.md`: the Python API and examples
 - `lora_mesh_examples/README.md`: the Erlang and LFE examples (`lme contacts`, `lme chat --lfe`, ...)
+- `meshtastic_examples/README.md`: the Meshtastic radio and MQTT examples (`mte fake-radio`, `mte nodedb --lfe`, ...)
