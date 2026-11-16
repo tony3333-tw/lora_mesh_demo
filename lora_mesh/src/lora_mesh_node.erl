@@ -11,6 +11,14 @@
 %%   #node_info{}     -> lora_mesh_router:node_info(BridgeId, Info)
 %%                       (the node's own database, sent on connect)
 %%
+%% and tells the router about itself (0.4), for mesh/bridge/<id>/...:
+%%
+%%   {status, #{connected => true}}    once the radio's config is read
+%%   {status, #{connected => false}}   when the connection is lost
+%%   {info, Map}                       what the radio sent on connect:
+%%                                     my_info, metadata, channels, config,
+%%                                     module_config (lora_mesh_json maps)
+%%
 %% Differences from lorawan_gw_forwarder:
 %%   - TCP to one node, not UDP from many gateways;
 %%   - protobuf frames (0x94 0xC3 len16), not Semtech JSON datagrams;
@@ -32,6 +40,10 @@
 -export([node_id/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-ifdef(TEST).
+-export([hide_secrets/1]).
+-endif.
+
 -include("lora_mesh.hrl").
 -include("meshtastic/mesh.hrl").
 
@@ -46,6 +58,10 @@
     sock = undefined              :: gen_tcp:socket() | undefined,
     buffer = <<>>                 :: binary(),
     my_num = undefined            :: non_neg_integer() | undefined,
+    %% what the radio sends before config_complete_id, for the info topic
+    info = #{}                    :: map(),
+    %% undefined until the first connect works or fails
+    ready = undefined             :: boolean() | undefined,
     backoff = ?RECONNECT_MIN_MS   :: pos_integer()}).
 
 %%====================================================================
@@ -172,11 +188,11 @@ handle_info({tcp, Sock, Data}, #state{sock = Sock, buffer = Buf} = State) ->
 
 handle_info({tcp_closed, Sock}, #state{sock = Sock, id = Id} = State) ->
     logger:warning("lora_mesh_node ~p: connection closed", [Id]),
-    schedule_reconnect(State);
+    schedule_reconnect(lost(closed, State));
 
 handle_info({tcp_error, Sock, Reason}, #state{sock = Sock, id = Id} = State) ->
     logger:warning("lora_mesh_node ~p: tcp error ~p", [Id, Reason]),
-    schedule_reconnect(State);
+    schedule_reconnect(lost(Reason, State));
 
 handle_info(heartbeat, #state{sock = undefined} = State) ->
     {noreply, State};
@@ -211,6 +227,7 @@ do_connect(#state{id = Id, host = Host, port = Port} = State) ->
             State2 = State#state{
                         sock = Sock,
                         buffer = <<>>,
+                        info = #{},
                         backoff = ?RECONNECT_MIN_MS},
             %% Ask the node to dump its config and node database;
             %% after that it streams packets.
@@ -219,8 +236,18 @@ do_connect(#state{id = Id, host = Host, port = Port} = State) ->
             {noreply, State2};
         {error, Reason} ->
             logger:warning("lora_mesh_node ~p: connect failed ~p", [Id, Reason]),
-            schedule_reconnect(State)
+            schedule_reconnect(lost(Reason, State))
     end.
+
+%% Say "disconnected" once: when a ready connection goes, or when the
+%% very first connect fails
+lost(Reason, #state{ready = Ready, id = Id} = State) when Ready =/= false ->
+    Status = status(false, State),
+    Why = iolist_to_binary(io_lib:format("~p", [Reason])),
+    _ = lora_mesh_router:bridge(Id, {status, Status#{reason => Why}}),
+    State#state{ready = false};
+lost(_Reason, State) ->
+    State.
 
 schedule_reconnect(#state{sock = Sock, backoff = Backoff} = State) ->
     _ = case Sock of
@@ -254,21 +281,106 @@ from_radio(Bin, State) ->
             State
     end.
 
-handle_variant({my_info, #my_node_info{my_node_num = Num}}, #state{id = Id} = State) ->
+handle_variant({my_info, #my_node_info{my_node_num = Num} = MyInfo},
+               #state{id = Id, info = Info} = State) ->
     logger:notice("lora_mesh_node ~p: my node is ~s", [Id, node_id(Num)]),
-    State#state{my_num = Num};
+    State#state{my_num = Num,
+                info = Info#{my_info => lora_mesh_json:record(MyInfo)}};
+handle_variant({metadata, #device_metadata{} = Metadata}, #state{info = Info} = State) ->
+    State#state{info = Info#{metadata => lora_mesh_json:record(Metadata)}};
+handle_variant({channel, #channel{} = Channel}, #state{info = Info} = State) ->
+    Channels = maps:get(channels, Info, []),
+    State#state{info = Info#{channels => Channels ++ [channel(Channel)]}};
+handle_variant({config, #config{} = Config}, #state{info = Info} = State) ->
+    %% one section per message: #{lora => ..., device => ..., ...}
+    State#state{info = Info#{config => maps:merge(maps:get(config, Info, #{}),
+                                                  lora_mesh_json:record(Config))}};
+handle_variant({moduleConfig, #module_config{} = Config}, #state{info = Info} = State) ->
+    State#state{info = Info#{module_config => maps:merge(maps:get(module_config, Info, #{}),
+                                                         lora_mesh_json:record(Config))}};
 handle_variant({node_info, #node_info{} = Info}, #state{id = Id} = State) ->
     route(Id, lora_mesh_router:node_info(Id, Info)),
     State;
-handle_variant({config_complete_id, _}, #state{id = Id} = State) ->
+handle_variant({config_complete_id, _}, #state{id = Id, info = Info} = State) ->
     logger:notice("lora_mesh_node ~p: config received, streaming packets", [Id]),
-    State;
+    _ = lora_mesh_router:bridge(Id, {info, info_map(Info, State)}),
+    _ = lora_mesh_router:bridge(Id, {status, status(true, State)}),
+    State#state{ready = true};
 handle_variant({packet, #mesh_packet{} = Packet}, #state{id = Id} = State) ->
     route(Id, lora_mesh_router:uplink(Id, Packet)),
     State;
 handle_variant(_Other, State) ->
     %% config, channel, log_record, undefined, ... ignored here
     State.
+
+%% a channel's index is shown even when it is 0 (MessageToDict leaves it out)
+channel(#channel{index = Index} = Channel) ->
+    (lora_mesh_json:record(Channel))#{index => Index}.
+
+info_map(Info0, #state{my_num = Num}) ->
+    Info = case application:get_env(lora_mesh, show_secrets, false) of
+               true -> Info0;
+               false -> hide_secrets(Info0)
+           end,
+    Info#{protocol => meshtastic,
+          my_num => Num,
+          my_id => case Num of
+                       undefined -> null;
+                       _ -> node_id(Num)
+                   end,
+          at => erlang:system_time(second)}.
+
+%% Anyone who can read the broker reads the info topic, so by default it
+%% leaves out what would let them into the radio, its Wi-Fi or a private
+%% channel: channel keys (except the well-known one-byte ones such as
+%% "AQ==", the default key), the Wi-Fi password, the radio's private key,
+%% the MQTT password. {show_secrets, true} in lora_mesh's config keeps them.
+hide_secrets(Info) ->
+    Channels = [hide_in(C, [settings, psk], fun hide_psk/1) || C <- maps:get(channels, Info, [])],
+    Config = hide_in(hide_in(maps:get(config, Info, #{}),
+                             [network, wifi_psk], fun hidden/1),
+                     [security, private_key], fun hidden/1),
+    Module = hide_in(maps:get(module_config, Info, #{}), [mqtt, password], fun hidden/1),
+    Info#{channels => Channels,
+          config => Config,
+          module_config => Module}.
+
+%% apply Fun to the value at Path, if it is there
+hide_in(Map, [Key], Fun) ->
+    case Map of
+        #{Key := V} -> Map#{Key := Fun(V)};
+        _ -> Map
+    end;
+hide_in(Map, [Key | Rest], Fun) ->
+    case Map of
+        #{Key := Sub} when is_map(Sub) -> Map#{Key := hide_in(Sub, Rest, Fun)};
+        _ -> Map
+    end.
+
+%% one byte (0 = none, 1 = default, 2..10 = default + N) is not secret
+hide_psk(<<"base64:", B64/binary>> = Psk) ->
+    case base64:decode(B64) of
+        <<_>> -> Psk;
+        _ -> hidden(Psk)
+    end;
+hide_psk(Psk) ->
+    hidden(Psk).
+
+hidden(_Secret) ->
+    <<"(hidden)">>.
+
+status(Connected, #state{host = Host, port = Port, my_num = Num}) ->
+    #{connected => Connected,
+      protocol => meshtastic,
+      address => iolist_to_binary(io_lib:format("~s:~p", [host(Host), Port])),
+      my_id => case Num of
+                   undefined -> null;
+                   _ -> node_id(Num)
+               end,
+      at => erlang:system_time(second)}.
+
+host(Host) when is_tuple(Host) -> inet:ntoa(Host);
+host(Host) -> Host.
 
 route(_Id, ok) ->
     ok;

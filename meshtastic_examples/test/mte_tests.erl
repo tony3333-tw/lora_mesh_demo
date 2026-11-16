@@ -46,6 +46,18 @@ decode_test() ->
     ?assertEqual(ignore, mtc:decode(C, #{topic => <<"mesh/node/!0a0b0c0d">>, payload => <<>>})),
     ?assertEqual(ignore, mtc:decode(C, #{topic => <<"other/rx/x">>, payload => <<"{}">>})).
 
+new_topics_test() ->
+    %% lora_mesh 0.4.0: packets, bridge info and status, lora_mesh's own status
+    C = #{prefix => <<"mesh">>},
+    Pub = fun(T) -> #{topic => T, payload => <<"{\"a\":1}">>} end,
+    ?assertEqual({packet, #{<<"a">> => 1}}, mtc:decode(C, Pub(<<"mesh/packet/!0a0b0c0d">>))),
+    ?assertEqual({bridge_info, <<"home">>, #{<<"a">> => 1}},
+                 mtc:decode(C, Pub(<<"mesh/bridge/home/info">>))),
+    ?assertEqual({bridge_status, <<"home">>, #{<<"a">> => 1}},
+                 mtc:decode(C, Pub(<<"mesh/bridge/home/status">>))),
+    ?assertEqual({status, #{<<"a">> => 1}}, mtc:decode(C, Pub(<<"mesh/status">>))),
+    ?assertEqual(ignore, mtc:decode(C, Pub(<<"mesh/bridge/home">>))).
+
 tx_test() ->
     ?assertEqual(#{<<"text">> => <<"hi">>, <<"channel">> => 1, <<"protocol">> => <<"meshtastic">>},
                  mte_mqtt_send:tx(#{message => "hi", channel => 1})),

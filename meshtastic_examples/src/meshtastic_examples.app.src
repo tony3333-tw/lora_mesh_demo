@@ -1,6 +1,6 @@
 {application, meshtastic_examples,
  [{description, "Erlang and LFE examples for Meshtastic through lora_mesh, after pdxlocations' Meshtastic-Python-Examples"},
-  {vsn, "0.2.0"},
+  {vsn, "0.3.0"},
   {registered, []},
   {applications, [kernel,
                   stdlib,

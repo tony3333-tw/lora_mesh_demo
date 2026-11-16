@@ -15,8 +15,8 @@
 %%   broker:  --host H (localhost) --port N (1883) --prefix P (mesh)
 %%            --username U --password W
 %%   what:    -d/--dest NODE  -m/--message TEXT  -c/--channel N
-%%            --seconds S  --wait S  --all
-%%   output:  --json  --topic T1,T2
+%%            --bridge ID  --seconds S  --wait S  --every S  --all
+%%   output:  --json  --raw  --log FILE  --counts  --topic T1,T2
 %%   decode:  --type MSG  --hex HEX  --base64 B64
 %%
 -module(mte).
@@ -30,6 +30,14 @@
          {"chat", mte_chat, mtl_chat, "send-and-receive.py"},
          {"dm", mte_dm, mtl_dm, "send-direct-message.py"},
          {"nodedb", mte_nodedb, mtl_nodedb, "print-nodedb.py"},
+         {"packets", mte_packets, mtl_packets,
+          "print-packets.py, print-packets-basic.py, print-packets-json.py,\n"
+          "                    print-packets-json-log.py, print-packets-json-log-and-plot.py"},
+         {"myinfo", mte_myinfo, mtl_myinfo, "print-myNodeInfo"},
+         {"local-stats", mte_local_stats, mtl_local_stats, "get-local-stats.py"},
+         {"channels", mte_channels, mtl_channels, "get-channels.py"},
+         {"preset", mte_preset, mtl_preset, "get-config-modem-preset.py"},
+         {"watchdog", mte_watchdog, mtl_watchdog, "tcp_watchdog.py"},
          {"decode", mte_decode, mtl_decode, "decode-protobuf.py"},
          {"protos", mte_protos, mtl_protos, "list-protos.py"},
          {"mqtt-receive", mte_mqtt_receive, mtl_mqtt_receive, "MQTT/receive-mqtt-packets.py"},
@@ -83,13 +91,18 @@ usage() ->
               "through lora_mesh (--host H --port N --prefix P, default localhost:1883 mesh):~n"),
     [io:format("  ~-14s ~s~n", [Name, Like]) || {Name, _, _, Like} <- ?EXAMPLES],
     io:format("~nsee README.md for each example's options, and for the examples~n"
-              "that wait for lora_mesh 0.4~n").
+              "that wait for lora_mesh 0.4.1 and 0.4.2~n").
 
 options([], Opts) ->
     Opts;
 options(["--lfe" | Rest], Opts) -> options(Rest, Opts#{lfe => true});
 options(["--json" | Rest], Opts) -> options(Rest, Opts#{json => true});
 options(["--all" | Rest], Opts) -> options(Rest, Opts#{all => true});
+options(["--raw" | Rest], Opts) -> options(Rest, Opts#{raw => true});
+options(["--counts" | Rest], Opts) -> options(Rest, Opts#{counts => true});
+options(["--log", V | Rest], Opts) -> options(Rest, Opts#{log => V});
+options(["--bridge", V | Rest], Opts) -> options(Rest, Opts#{bridge => V});
+options(["--every", V | Rest], Opts) -> options(Rest, Opts#{every => int(V)});
 options(["--host", V | Rest], Opts) -> options(Rest, Opts#{host => V});
 options(["--port", V | Rest], Opts) -> options(Rest, Opts#{port => int(V)});
 options(["--prefix", V | Rest], Opts) -> options(Rest, Opts#{prefix => V});

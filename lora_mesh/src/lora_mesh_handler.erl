@@ -9,7 +9,9 @@
 %%   NODEINFO_APP      (4)  -> names and hardware in the registry
 %%   POSITION_APP      (3)  -> position in the registry
 %%   TELEMETRY_APP    (67)  -> battery and voltage in the registry
-%%   every packet           -> last heard + who heard it, in the registry
+%%   every packet           -> last heard + who heard it, in the registry,
+%%                             and {packet, #mesh_packet{}, Bridges} to the
+%%                             connector (mesh/packet/<from>, 0.4)
 %%
 %% Plain functions, run in the router's process.
 %%
@@ -27,6 +29,7 @@
 %% Copies: [{Bridge, #mesh_rxq{}}], best reception first.
 -spec uplink(#mesh_packet{}, [{atom(), #mesh_rxq{}}], pid() | atom()) -> ok.
 uplink(#mesh_packet{from = From} = Packet, Copies, Subscriber) ->
+    catch Subscriber ! {packet, Packet, [Bridge || {Bridge, _} <- Copies]},
     %% the payload first, then "heard": a new node's first registry record
     %% then already carries its name (NODEINFO) or position
     case Packet#mesh_packet.payload_variant of

@@ -3,3 +3,10 @@
 ## Change the cookie before joining machines together.
 -sname lora_mesh
 -setcookie lora_mesh_change_me
+
+## Two or more machines (role full + role bridge): use full names with the
+## machine's own address, so the other side can always resolve it, e.g.
+##   -name lora_mesh@192.168.10.11
+## and fix the distribution ports, to open them in a firewall or VLAN ACL
+## (plus 4369/tcp for epmd):
+##   -kernel inet_dist_listen_min 9100 inet_dist_listen_max 9105

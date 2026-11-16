@@ -22,6 +22,7 @@
 -export([uplink/2]).
 -export([node_info/2]).
 -export([message/4]).
+-export([bridge/2]).
 -export([stats/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -68,6 +69,14 @@ node_info(Bridge, #node_info{} = Info) ->
           ok | {error, no_router}.
 message(Bridge, Key, FromNum, #mesh_rx{} = Rx) ->
     to_router({message, Bridge, Key, FromNum, Rx}).
+
+%% A bridge's own news, passed on to the subscriber (the MQTT connector)
+%% as {bridge, Bridge, Event}:
+%%   {status, #{connected => true | false, ...}}
+%%   {info, #{my_info => ..., channels => ..., config => ..., ...}}
+-spec bridge(atom(), {status | info, map()}) -> ok | {error, no_router}.
+bridge(Bridge, {Kind, Map} = Event) when (Kind =:= status orelse Kind =:= info), is_map(Map) ->
+    to_router({bridge, Bridge, Event}).
 
 %% Counters: published, duplicates (inside the window), late (after it).
 stats() ->
@@ -130,6 +139,10 @@ handle_info({flush, Key}, #state{pending = Pending, seen = Seen} = State) ->
 
 handle_info({node_info, Bridge, #node_info{} = Info}, State) ->
     lora_mesh_handler:node_info(Bridge, Info),
+    {noreply, State};
+
+handle_info({bridge, Bridge, Event}, #state{subscriber = Sub} = State) ->
+    catch Sub ! {bridge, Bridge, Event},
     {noreply, State};
 
 handle_info(prune, #state{seen = Seen} = State) ->

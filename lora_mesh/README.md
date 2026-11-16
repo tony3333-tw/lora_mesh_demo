@@ -1,4 +1,4 @@
-# lora_mesh 0.3
+# lora_mesh 0.4
 
 Meshtastic and MeshCore **bridges, router and node registry** in Erlang, written with records and laid out like
 [gotthardp/lorawan-server](https://github.com/gotthardp/lorawan-server) so the two can be read side by side.
@@ -10,6 +10,9 @@ Meshtastic and MeshCore **bridges, router and node registry** in Erlang, written
 - **0.3, MeshCore:** a second kind of bridge, `lora_mesh_meshcore`, for MeshCore companion radios over USB
   serial or Wi-Fi: text messages (direct and channel) and contacts, into the same router, registry and MQTT
   topics. See [MeshCore](#meshcore).
+- **0.4.0, more on MQTT:** every packet (`mesh/packet/<from>`), each bridge's radio
+  (`mesh/bridge/<id>/info`), whether each bridge and lora_mesh itself are connected
+  (`mesh/bridge/<id>/status`, `mesh/status`). See [MQTT](#mqtt).
 
 ## The pipeline
 
@@ -85,6 +88,7 @@ A Meshtastic packet is identified by `{From, Id}`: the sender picks a random 32-
   {bridges, [#{id => home, host => "192.168.1.50"},
              #{id => hill, host => "100.64.0.12"}]},  % e.g. over Tailscale
   {dedup_ms, 200},
+  {show_secrets, false},                          % 0.4: channel keys etc. in mesh/bridge/<id>/info
   {mqtt, #{host => "localhost", port => 1883, prefix => <<"mesh">>}}]}
 ```
 
@@ -92,8 +96,9 @@ A Meshtastic packet is identified by `{From, Id}`: the sender picks a random 32-
 - **`role bridge`** runs only the bridges. Put it on a small machine next to a node (a Pi, a VPS), join it to
   the cluster (same cookie, `-sname`, Tailscale as in your pg cluster plan), and its bridges find the router
   through `pg`. Bridges send to a router on their own Erlang node if there is one, else to any in the cluster;
-  `send/1` likewise prefers a local bridge. Multi-node use has not been tested yet; all tests run the
-  bridges and router on one Erlang node.
+  `send/1` likewise prefers a local bridge. List the role-full machine in `{connect, [...]}` on the bridge
+  machine so they stay connected. Tested with two Erlang nodes on one machine (see the two-machine demo);
+  not yet between two physical machines.
 
 ## MQTT
 
@@ -101,6 +106,10 @@ A Meshtastic packet is identified by `{From, Id}`: the sender picks a random 32-
 |---|---|---|
 | `mesh/rx/<from>` | out | text message, best copy, plus `bridges` |
 | `mesh/node/<id>` | out, **retained** | the node's registry record, updated on every change |
+| `mesh/packet/<from>` | out | **0.4:** every packet, whatever its port: all its fields that are set, the payload decoded by port (`text`, `position`, `user`, `telemetry`, `routing`, `neighborinfo`, ...), `from_id`, `to_id`, `bridges`. Meshtastic only |
+| `mesh/bridge/<id>/info` | out, **retained** | **0.4:** what the bridge's radio said when it connected. Meshtastic: `my_info`, `metadata`, `channels`, `config`, `module_config`, `my_id`. MeshCore: `my_id`, `name`, `firmware`, position. Secrets hidden (see below) |
+| `mesh/bridge/<id>/status` | out, **retained** | **0.4:** `{"connected": true, "address": ..., "my_id": ..., "at": ...}`; `false` with a `reason` when the radio goes away |
+| `mesh/status` | out, **retained** | **0.4:** `{"online": true}`, or `{"online": false}` (the broker's last will) when lora_mesh stops or loses the broker |
 | `mesh/tx` | in | `{"text": "...", "to": "!a1b2c3d4", "channel": 0, "bridge": "hill"}`; only `text` is required. `to` may be `"@a1a2a3a4a5a6"` (MeshCore); `"protocol": "meshcore"` or `"meshtastic"` picks the mesh for a broadcast |
 
 ```
@@ -108,6 +117,22 @@ mesh/rx/!0a0b0c0d {"id":99,"text":"哈囉 from mesh","bridges":["hill","home"],"
 
 mesh/node/!0a0b0c0d {"id":"!0a0b0c0d","num":168496141,"long_name":"Hill top","short_name":"HILL","hw_model":"HELTEC_V3","role":"CLIENT","position":{"latitude":24.1477,"longitude":120.6736,"altitude":85,"time":0},"battery_level":null,"voltage":null,"last_heard":1793187882,"heard_by":{"home":{"at":1793187882,"rxq":{...,"rx_snr":5.0}},"hill":{"at":1793187882,"rxq":{...,"rx_snr":8.5}}}}
 ```
+
+The packet and info JSON follow the protobufs: field names in snake_case, fields with their
+default value left out (as in Python's `MessageToDict`; so `LONG_FAST`, the first preset, does
+not appear), enums by name, bytes that are not text as `"base64:..."`.
+
+```
+mesh/packet/!0600d1e5 {"from":100717029,"from_id":"!0600d1e5","to_id":"!ffffffff","id":1486441334,"bridges":["home"],"decoded":{"portnum":"TELEMETRY_APP","payload":"base64:DW5C...","telemetry":{"time":1793868398,"local_stats":{"uptime_seconds":4085,"channel_utilization":6.9,...}}}}
+
+mesh/bridge/hill/status {"bridge":"hill","connected":true,"protocol":"meshtastic","address":"127.0.0.1:33693","my_id":"!0600d1e6","at":1793868351}
+```
+
+**Secrets.** Anyone who can read the broker reads the info topic, so lora_mesh leaves out what would
+let them into a radio, its Wi-Fi or a private channel: channel keys (except the well-known one-byte
+ones, such as `"AQ=="`, the default key), the Wi-Fi password, the radio's private key and its MQTT
+password all read `"(hidden)"`. `{show_secrets, true}` in lora_mesh's config publishes them; do that
+only on a broker nobody else can read.
 
 Without `"bridge"`, a direct message goes out through any bridge of the destination's mesh, a broadcast
 through any bridge (or any of `"protocol"`), one on this Erlang node first. Choosing the *best* bridge
@@ -243,6 +268,27 @@ boards (published once, `bridges` lists both); battery telemetry from Farm and p
 update `mesh/node/...`, not `mesh/rx`); a direct message from School to the home board; "ping?" for a bot;
 and once a new node, Dave (NODEINFO). A node sent a direct message answers "got it: ...".
 Stop it with `lora_mesh_demo_meshtastic:stop().`
+
+**On two machines.** The Meshtastic demo can also split its two boards across two Erlang nodes, for example
+two Raspberry Pis in one VLAN, to show `role bridge`: rpi4-a runs role full (router, registry, MQTT) with
+board home and runs the script; rpi4-b runs role bridge with board hill and connects to rpi4-a.
+
+```sh
+rpi4-a$ rebar3 as test shell --start-clean --name lora_mesh@192.168.10.11 --setcookie demo
+1> lora_mesh_demo_meshtastic:start(#{boards => [home]}).
+
+rpi4-b$ rebar3 as test shell --start-clean --name lora_mesh@192.168.10.12 --setcookie demo
+1> lora_mesh_demo_meshtastic:start(#{role => bridge, boards => [hill],
+                                     connect => ['lora_mesh@192.168.10.11']}).
+```
+
+`lora_mesh_cluster` (the `connect` setting) keeps rpi4-b connected to rpi4-a and retries every 5 s. Once
+connected, pg shares the groups: hill's bridge on rpi4-b sends to the router on rpi4-a, the temperature heard
+by both boards arrives through two machines and is published once (`via hill, home`), and
+`send ... --bridge hill` on MQTT reaches the board on rpi4-b. If rpi4-b goes down, rpi4-a logs it, keeps
+working with home only, and `--bridge hill` fails with `no_bridge` until rpi4-b is back. Tested with two
+Erlang nodes on one machine; between real machines, epmd (4369/tcp) and the distribution ports must be open
+(see `config/vm.args`).
 
 The **mixed demo** (`test/lora_mesh_demo.erl`) runs lora_mesh against fake radios: two MeshCore companions ("field", "barn")
 and one Meshtastic node ("home"), with named nodes (Alice, Bob, Pump, Ridge, Hill top, School). Every few

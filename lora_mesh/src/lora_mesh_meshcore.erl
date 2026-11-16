@@ -70,7 +70,11 @@
     %% recent RX log entries (text packets only), oldest first, to find a
     %% message's path when it is synced: [{MonotonicMs, Packet}]
     rx_log = []                     :: [{integer(), map()}],
-    backoff = ?RECONNECT_MIN_MS     :: pos_integer()}).
+    backoff = ?RECONNECT_MIN_MS     :: pos_integer(),
+    %% 0.4: undefined until the first connect works or fails, then
+    %% whether mesh/bridge/<id>/status last said "connected"
+    ready = undefined               :: boolean() | undefined,
+    firmware = undefined            :: binary() | undefined}).
 
 %%====================================================================
 %% API
@@ -223,7 +227,7 @@ do_connect(#state{id = Id} = State) ->
         {error, Reason} ->
             logger:warning("lora_mesh_meshcore ~p: cannot open ~s: ~p",
                            [Id, describe(State), Reason]),
-            schedule_reconnect(State)
+            schedule_reconnect(down(Reason, State))
     end.
 
 open(#state{transport = tcp, host = Host, port = Port}) ->
@@ -276,7 +280,40 @@ close({serial, Port, Fd, OsPid}) ->
 
 lost(Reason, #state{id = Id} = State) ->
     logger:warning("lora_mesh_meshcore ~p: connection lost ~p", [Id, Reason]),
-    schedule_reconnect(State).
+    schedule_reconnect(down(Reason, State)).
+
+%% 0.4: mesh/bridge/<id>/status, once per change
+down(Reason, #state{ready = Ready, id = Id} = State) when Ready =/= false ->
+    Status = status(false, State),
+    Why = iolist_to_binary(io_lib:format("~p", [Reason])),
+    _ = lora_mesh_router:bridge(Id, {status, Status#{reason => Why}}),
+    State#state{ready = false};
+down(_Reason, State) ->
+    State.
+
+status(Connected, #state{self = Self} = State) ->
+    #{connected => Connected,
+      protocol => meshcore,
+      address => unicode:characters_to_binary(describe(State)),
+      my_id => case Self of
+                   #{num := Num} -> node_id(Num);
+                   _ -> null
+               end,
+      at => erlang:system_time(second)}.
+
+%% 0.4: mesh/bridge/<id>/info, from the radio's self info
+info(#state{self = Self, firmware = Firmware}) ->
+    #{protocol => meshcore,
+      my_num => maps:get(num, Self),
+      my_id => node_id(maps:get(num, Self)),
+      name => maps:get(name, Self),
+      firmware => case Firmware of
+                      undefined -> null;
+                      _ -> Firmware
+                  end,
+      latitude => maps:get(latitude, Self, null),
+      longitude => maps:get(longitude, Self, null),
+      at => erlang:system_time(second)}.
 
 schedule_reconnect(#state{conn = Conn, backoff = Backoff, current = Current, queue = Q} = State) ->
     close(Conn),
@@ -413,7 +450,7 @@ handle_response(Response, #state{current = undefined, id = Id} = State) ->
 handle_response({device_info, Info}, #state{current = {device_query, _, _}, id = Id} = State) ->
     logger:notice("lora_mesh_meshcore ~p: firmware ~s (protocol ~p)",
                   [Id, maps:get(version, Info, <<"?">>), maps:get(firmware_ver_code, Info)]),
-    done(ok, State);
+    done(ok, State#state{firmware = maps:get(version, Info, undefined)});
 
 handle_response({self_info, Self}, #state{current = {app_start, _, _}, id = Id} = State) ->
     #{pub_key := PubKey, name := Name} = Self,
@@ -425,7 +462,10 @@ handle_response({self_info, Self}, #state{current = {app_start, _, _}, id = Id} 
               last_advert => 0,
               latitude => maps:get(latitude, Self),
               longitude => maps:get(longitude, Self)}),
-    done(ok, State#state{self = Self#{num => Num}});
+    State2 = State#state{self = Self#{num => Num}, ready = true},
+    _ = lora_mesh_router:bridge(Id, {info, info(State2)}),
+    _ = lora_mesh_router:bridge(Id, {status, status(true, State2)}),
+    done(ok, State2);
 
 handle_response({contacts_start, _Count}, #state{current = {contacts, _, _}} = State) ->
     continue(State);

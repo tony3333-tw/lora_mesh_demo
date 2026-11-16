@@ -9,6 +9,14 @@
 %%   mesh/node/<id>   what lora_mesh knows about a node  (JSON, retained)
 %%   mesh/tx          a text to send into the mesh       (JSON)
 %%
+%% and since lora_mesh 0.4:
+%%
+%%   mesh/packet/<id>         every packet, decoded by port  (JSON)
+%%   mesh/bridge/<id>/info    each bridge's radio: my_info, channels,
+%%                            config, ...                    (JSON, retained)
+%%   mesh/bridge/<id>/status  is the bridge connected?       (JSON, retained)
+%%   mesh/status              is lora_mesh up?               (JSON, retained)
+%%
 %% Messages arrive in the process that called connect/1, as emqtt sends
 %% them: {publish, #{topic := T, payload := P}}. next/2 waits for one and
 %% decodes it to {rx, Rx} or {node, Node}. JSON keys stay binaries:
@@ -22,8 +30,8 @@
 %%   maps:get(<<"text">>, Rx),
 %%   mtc:disconnect(C).
 %%
-%% Only text messages and node records travel through lora_mesh 0.3;
-%% see README.md for what waits for lora_mesh 0.4.
+%% Requests (traceroute, telemetry, ...) and admin wait for lora_mesh
+%% 0.4.1 and 0.4.2; see README.md.
 %%
 -module(mtc).
 
@@ -44,6 +52,10 @@
 -export([send_text/3]).
 -export([is_channel/1]).
 -export([hops/1]).
+-export([bridges/2]).
+-export([get/3]).
+-export([show/1]).
+-export([json/1]).
 -export([deadline/1]).
 -export([left/1]).
 
@@ -84,29 +96,51 @@ disconnect(#{conn := Conn}) ->
     _ = emqtt:disconnect(Conn),
     ok.
 
-%% What = rx | nodes
+%% What = rx | nodes | packets | bridges | status
+%%   bridges: every bridge's info and status; status: lora_mesh's own
 subscribe(#{conn := Conn, prefix := Prefix}, What) ->
-    Topic = case What of
-                rx -> <<Prefix/binary, "/rx/#">>;
-                nodes -> <<Prefix/binary, "/node/#">>
-            end,
-    {ok, _, _} = emqtt:subscribe(Conn, Topic, 0),
+    Topics = case What of
+                 rx -> [<<Prefix/binary, "/rx/#">>];
+                 nodes -> [<<Prefix/binary, "/node/#">>];
+                 packets -> [<<Prefix/binary, "/packet/#">>];
+                 bridges -> [<<Prefix/binary, "/bridge/+/info">>,
+                             <<Prefix/binary, "/bridge/+/status">>];
+                 status -> [<<Prefix/binary, "/status">>]
+             end,
+    [{ok, _, _} = emqtt:subscribe(Conn, Topic, 0) || Topic <- Topics],
     ok.
 
-%% One emqtt publish map -> {rx, Rx} | {node, Node} | ignore
+%% One emqtt publish map ->
+%%   {rx, Rx} | {node, Node} | {packet, Packet}
+%%   | {bridge_info, Bridge, Info} | {bridge_status, Bridge, Status}
+%%   | {status, Status} | ignore
+%% (Bridge is the bridge's id as a binary: <<"home">>)
+decode(_Client, #{payload := <<>>}) ->
+    %% a retained message being removed
+    ignore;
 decode(#{prefix := Prefix}, #{topic := Topic, payload := Payload}) ->
     Size = byte_size(Prefix),
     case Topic of
         <<Prefix:Size/binary, "/rx/", _/binary>> ->
             {rx, json:decode(Payload)};
-        <<Prefix:Size/binary, "/node/", _/binary>> when Payload =/= <<>> ->
+        <<Prefix:Size/binary, "/node/", _/binary>> ->
             {node, json:decode(Payload)};
+        <<Prefix:Size/binary, "/packet/", _/binary>> ->
+            {packet, json:decode(Payload)};
+        <<Prefix:Size/binary, "/bridge/", Rest/binary>> ->
+            case binary:split(Rest, <<"/">>) of
+                [Bridge, <<"info">>] -> {bridge_info, Bridge, json:decode(Payload)};
+                [Bridge, <<"status">>] -> {bridge_status, Bridge, json:decode(Payload)};
+                _ -> ignore
+            end;
+        <<Prefix:Size/binary, "/status">> ->
+            {status, json:decode(Payload)};
         _ ->
             ignore
     end.
 
-%% Wait up to Timeout ms for the next text message or node record:
-%% {rx, Rx} | {node, Node} | timeout
+%% Wait up to Timeout ms for the next message on what was subscribed
+%% (see decode/2), or timeout
 next(Client, Timeout) ->
     receive
         {publish, Msg} ->
@@ -199,6 +233,71 @@ display_name(Node) ->
         null -> maps:get(<<"id">>, Node);
         Name -> Name
     end.
+
+%%====================================================================
+%% Bridges (lora_mesh 0.4)
+%%====================================================================
+
+%% Each bridge's info (mesh/bridge/<id>/info), Meshtastic bridges only
+%% unless Opts all => true, sorted by bridge id; only the bridge named
+%% by --bridge (Opts bridge => "home") if given. Each map has
+%% <<"bridge">>, <<"my_id">>, <<"my_info">>, <<"channels">>,
+%% <<"config">>, ... as lora_mesh publishes them, and <<"status">> (the
+%% bridge's status map) when known. Collects until nothing new arrives
+%% for a second.
+bridges(Client, Opts) ->
+    ok = subscribe(Client, bridges),
+    All = collect_bridges(Client, #{}),
+    Wanted = [maps:put(<<"bridge">>, Id, Info)
+              || {Id, Info} <- lists:sort(maps:to_list(All)),
+                 maps:is_key(<<"protocol">>, Info),
+                 maps:get(all, Opts, false)
+                     orelse maps:get(<<"protocol">>, Info) =:= <<"meshtastic">>],
+    case maps:find(bridge, Opts) of
+        {ok, Name} ->
+            Bin = unicode:characters_to_binary(Name),
+            [B || #{<<"bridge">> := Id} = B <- Wanted, Id =:= Bin];
+        error ->
+            Wanted
+    end.
+
+collect_bridges(Client, Acc) ->
+    case next(Client, ?QUIET_MS) of
+        {bridge_info, Id, Info} ->
+            collect_bridges(Client, Acc#{Id => maps:merge(maps:get(Id, Acc, #{}), Info)});
+        {bridge_status, Id, Status} ->
+            Known = maps:get(Id, Acc, #{}),
+            collect_bridges(Client, Acc#{Id => Known#{<<"status">> => Status}});
+        timeout ->
+            Acc;
+        _Other ->
+            collect_bridges(Client, Acc)
+    end.
+
+%% A value deep inside a decoded map: get(P, [<<"decoded">>,
+%% <<"telemetry">>], Default), like Python's p.get(...).get(...)
+get(Value, [], _Default) ->
+    Value;
+get(#{} = Map, [Key | Rest], Default) ->
+    case Map of
+        #{Key := V} -> get(V, Rest, Default);
+        _ -> Default
+    end;
+get(_Other, _Path, Default) ->
+    Default.
+
+%% A JSON value as text, the way Python's print() shows it
+show(V) when is_binary(V) -> V;
+show(V) when is_float(V) -> float_to_binary(V, [short]);
+show(null) -> <<"None">>;
+show(true) -> <<"True">>;
+show(false) -> <<"False">>;
+show(V) when is_atom(V) -> atom_to_binary(V);
+show(V) -> iolist_to_binary(io_lib:format("~p", [V])).
+
+%% Indented JSON (iodata), like json.dumps(x, indent=2)
+json(Term) ->
+    json:format(Term).
 
 %%====================================================================
 %% Sending

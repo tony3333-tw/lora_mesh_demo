@@ -17,9 +17,10 @@ lora_mesh keeps the only connection to each radio, so the examples never take a 
 it, and they reach every bridge lora_mesh has (on this machine or another). Nothing goes to a
 public broker.
 
-This version has the examples that work with lora_mesh 0.3 as it is: text messages and the node
-list. The others need new topics in lora_mesh; they are listed under
-[Waiting for lora_mesh 0.4](#waiting-for-lora_mesh-04).
+This version (0.3.0) has 16 examples. They need **lora_mesh 0.4.0**: text messages, the node list,
+every packet (`mesh/packet`) and each bridge's radio (`mesh/bridge/<id>/...`). The 10 examples of
+0.2.0 also work with lora_mesh 0.3. The rest need requests through lora_mesh; they are listed
+under [Waiting for lora_mesh 0.4.1 and 0.4.2](#waiting-for-lora_mesh-041-and-042).
 
 ## Build and run
 
@@ -49,6 +50,9 @@ mte messages --seconds 30
 mte dm -d School -m "hello"       # School: got it: hello
 mte chat -d "Hill top"            # type lines; "quit" ends
 mte autoresponder -c 1
+mte packets                       # every packet, parsed by port
+mte channels                      # each bridge radio's channels
+mte watchdog                      # lora_mesh and its bridges, up or down
 mte mqtt-receive                  # everything lora_mesh publishes
 ```
 
@@ -66,6 +70,12 @@ to any example to run the LFE version.
 | `chat` | send-and-receive.py | `-d NODE` or `-c N` |
 | `dm` | send-direct-message.py | `-d NODE -m TEXT`, `--wait S` (10) |
 | `nodedb` | print-nodedb.py | `--json`, `--all` (MeshCore nodes too) |
+| `packets` | print-packets.py, print-packets-basic.py, print-packets-json.py, print-packets-json-log.py, print-packets-json-log-and-plot.py | none, `--raw`, `--json`, `--log FILE`, `--counts` |
+| `myinfo` | print-myNodeInfo | `--bridge ID` |
+| `local-stats` | get-local-stats.py | `--bridge ID` |
+| `channels` | get-channels.py | `--bridge ID` |
+| `preset` | get-config-modem-preset.py | `--bridge ID` |
+| `watchdog` | tcp_watchdog.py | `--every S` (10) |
 | `decode` | decode-protobuf.py | `--hex HEX` or `--base64 B64`, `--type MSG` |
 | `protos` | list-protos.py | |
 | `mqtt-receive` | MQTT/receive-mqtt-packets.py | `--topic T1,T2` (`mesh/rx/#,mesh/node/#`) |
@@ -78,9 +88,13 @@ The three `mqtt-*` examples use plain emqtt and the `json` module, without `mtc`
 lora_mesh's topics as any MQTT client sees them.
 
 ```
-mesh/rx/<from>      out        a text message (JSON)
-mesh/node/<id>      out, kept  what lora_mesh knows about a node (JSON, retained)
-mesh/tx             in         {"text": "...", "to": "!0a0b0c0d", "channel": 0}
+mesh/rx/<from>           out        a text message (JSON)
+mesh/node/<id>           out, kept  what lora_mesh knows about a node (JSON, retained)
+mesh/packet/<from>       out        every packet, decoded by port (0.4.0)
+mesh/bridge/<id>/info    out, kept  what a bridge's radio said when it connected (0.4.0)
+mesh/bridge/<id>/status  out, kept  whether a bridge is connected (0.4.0)
+mesh/status              out, kept  whether lora_mesh is up (0.4.0, the broker's last will)
+mesh/tx                  in         {"text": "...", "to": "!0a0b0c0d", "channel": 0}
 ```
 
 From the Erlang shell instead of the escript:
@@ -107,37 +121,39 @@ rebar3 shell
   It has no per-node SNR, hops, channel use or MAC address.
 - **autoresponder** does not answer its own reply text, so two of them don't answer each other
   for ever.
+- **myinfo, channels, preset, local-stats** show every bridge's radio, not one radio; `--bridge
+  ID` picks one. Private channel keys show as "(hidden)", because lora_mesh does not publish
+  secrets unless its config says `{show_secrets, true}`.
+- **packets** gets one copy of each packet, with `bridges` saying which bridges heard it.
+  `--counts` prints text bar charts every 10 s instead of opening a matplotlib window.
+- **watchdog** watches lora_mesh and its bridges instead of one TCP link: lora_mesh reconnects
+  its radios by itself, and the watchdog says what is up and what is down.
 - **mqtt-send** sends texts as the bridge's own radio, so there is no made-up "Bottastic" node, no
   node info and no position.
 - **mqtt-receive** gets JSON that the radios have already decrypted, from your broker; the Python
   example gets encrypted protobuf from the public broker and decrypts it.
 
-## Waiting for lora_mesh 0.4
+## Waiting for lora_mesh 0.4.1 and 0.4.2
 
-The other Python examples need things lora_mesh 0.3 does not publish or accept. This is the
-plan for lora_mesh 0.4 and the examples it would bring:
+The other Python examples need requests sent through lora_mesh, which lora_mesh 0.4.0 does not
+accept yet. The plan:
 
-| lora_mesh 0.4 adds | Examples it enables | Python examples |
+| lora_mesh adds | Examples it enables | Python examples |
 |---|---|---|
-| `mesh/packet/<from>`: every packet a bridge hears (all ports, decoded), not only texts | `packets` (`--raw`, `--json`, `--log FILE`, `--counts`) | print-packets.py, print-packets-basic.py, print-packets-json.py, print-packets-json-log.py, print-packets-json-log-and-plot.py |
-| `mesh/bridge/<id>/info` (retained): each bridge's radio as it connects: my info, channels, config, metadata, local stats | `myinfo`, `local-stats`, `channels`, `preset` | print-myNodeInfo, get-local-stats.py, get-channels.py, get-config-modem-preset.py |
-| `mesh/bridge/<id>/status` (retained, with a last will): connected or not | `watchdog` (watches lora_mesh's bridges instead of one TCP link) | tcp_watchdog.py |
-| `mesh/req` → `mesh/resp/<ref>`: send a request through a bridge and get the answer back | `traceroute`, `request` (telemetry, environment, position, node info), `send` (position, node info, telemetry, waypoint), `foxhunt`; and the ACK for `dm` | send-traceroute-simple.py, print-traceroute.py, request-*.py, send-*.py, foxhunt.py, test-rssi-snr.py |
-| Admin through `mesh/req`, **off unless lora_mesh's config turns it on** | `save-channel`, `admin-keys`, `set-url` | save-channel.py, save-admin-keys.py, set-URL.py |
+| 0.4.1: `mesh/req` → `mesh/resp/<ref>`: send a request through a bridge and get the answer back | `traceroute`, `request` (telemetry, environment, position, node info), `send` (position, node info, telemetry, waypoint), `foxhunt`; and the ACK for `dm` | send-traceroute-simple.py, print-traceroute.py, request-*.py, send-*.py, foxhunt.py, test-rssi-snr.py |
+| 0.4.2: admin through `mesh/req`, **off unless lora_mesh's config turns it on** | `save-channel`, `admin-keys`, `set-url` | save-channel.py, save-admin-keys.py, set-URL.py |
 
 Not planned: MQTT/serial-mqtt.py (a radio's packets to an MQTT broker) is what lora_mesh itself
 does.
 
 Admin stays off by default because anyone who can publish to the broker could otherwise change
-the radios' channels and keys. A Meshtastic-only version of these examples that talks to a radio
-directly (TCP 4403) was written first and is kept out of this tree; parts of it (the request and
-admin code, a fake radio that answers them) can move into lora_mesh 0.4.
+the radios' channels and keys.
 
 ## The code
 
 | Module | What |
 |---|---|
-| `mtc` | a small client for lora_mesh: connect, node list, find a node, send a text, wait for messages. What `meshtastic.tcp_interface` does for the Python examples, through lora_mesh |
+| `mtc` | a small client for lora_mesh: connect, node list, bridges, find a node, send a text, wait for messages and packets. What `meshtastic.tcp_interface` does for the Python examples, through lora_mesh |
 | `mtp` | Meshtastic protobufs as maps (decode, compact), for `decode` |
 | `mte` | the command line |
 | `mt_pb` | generated from `proto/` by gpb at build time |
@@ -163,7 +179,7 @@ case mtc:next(C, mtc:left(Deadline)) of
 ## Tests
 
 ```sh
-rebar3 eunit      # mtc's node lookup, topics and mesh/tx JSON, both languages' tx, mtp
+rebar3 eunit      # mtc's node lookup, topics (0.4.0 ones too) and mesh/tx JSON, both languages' tx, mtp
 ```
 
 The examples themselves were run against lora_mesh's Meshtastic demo, in both languages.

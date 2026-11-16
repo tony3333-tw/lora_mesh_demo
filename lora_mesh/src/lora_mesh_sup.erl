@@ -13,6 +13,9 @@ start_link() ->
 %% role bridge          : pg scope and bridges only; they find the router
 %%                        on another Erlang node through pg
 %%
+%% Both roles start lora_mesh_cluster, which keeps this node connected to
+%% the nodes listed in {connect, [...]} (none by default).
+%%
 %% Order matters: the router side starts before the bridges so the first
 %% packets have somewhere to go.
 init([]) ->
@@ -23,7 +26,10 @@ init([]) ->
                  period => 30},
     Scope = #{id => pg_scope,
               start => {pg, start_link, [?PG_SCOPE]}},
-    {ok, {SupFlags, [Scope | server(Role) ++ [bridge(B) || B <- Bridges]]}}.
+    Cluster = #{id => lora_mesh_cluster,
+                start => {lora_mesh_cluster, start_link,
+                          [application:get_env(lora_mesh, connect, [])]}},
+    {ok, {SupFlags, [Scope, Cluster | server(Role) ++ [bridge(B) || B <- Bridges]]}}.
 
 server(bridge) ->
     [];

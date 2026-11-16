@@ -2,6 +2,37 @@
 
 What changed in each tagged version of this repository. The newest is first.
 
+## 0.4.0 — 2026-11-05
+
+### Added
+
+- lora_mesh 0.4.0, four new MQTT topics:
+  - `mesh/packet/<from>`: every packet the bridges hear, whatever its port, decoded (text,
+    position, user, telemetry, routing, neighbor info, ...), with `bridges`. Meshtastic only.
+  - `mesh/bridge/<id>/info` (retained): what each bridge's radio said when it connected. For
+    Meshtastic its my info, metadata, channels, config and module config; for MeshCore its id,
+    name, firmware and position.
+  - `mesh/bridge/<id>/status` (retained): whether each bridge is connected, and why not.
+  - `mesh/status` (retained): whether lora_mesh is up. The broker's last will sets it to
+    `{"online": false}` if lora_mesh stops without saying goodbye.
+- `show_secrets` in lora_mesh's config (`false` by default): channel keys, the Wi-Fi password,
+  the radio's private key and other secrets are left out of `mesh/bridge/<id>/info`.
+- `meshtastic_examples/` 0.3.0: six examples back, as clients of lora_mesh: `packets` (`--raw`,
+  `--json`, `--log FILE`, `--counts`), `myinfo`, `local-stats`, `channels`, `preset` and
+  `watchdog`, in Erlang and LFE. 16 examples in all.
+
+### Notes
+
+- The 10 examples of 0.3.4 still work with lora_mesh 0.3; the six new ones need 0.4.0.
+- Coming next: 0.4.1 (requests through lora_mesh: `traceroute`, `request`, `send`, `foxhunt`,
+  the ACK for `dm`) and 0.4.2 (admin, off by default).
+
+### Tests
+
+- lora_mesh: 71 eunit tests, 7 of them new (`cd lora_mesh && rebar3 eunit`).
+- meshtastic_examples: 8 eunit tests. Every example was run against lora_mesh's Meshtastic
+  demo in both languages, and `watchdog` through a lora_mesh crash and restart.
+
 ## 0.3.4 — 2026-11-05
 
 ### Changed

@@ -5,10 +5,10 @@ Runs a live demo with fake radios, so no hardware is needed to try it.
 
 | Folder / file | What | Licence |
 |---|---|---|
-| `lora_mesh/` | Erlang server: radio bridges, router, node registry, MQTT connector (0.3.2) | GPL-3.0 (uses Meshtastic's protobufs) |
+| `lora_mesh/` | Erlang server: radio bridges, router, node registry, MQTT connector (0.4.0) | GPL-3.0 (uses Meshtastic's protobufs) |
 | `lora_mesh_client/` | Python client: read messages and nodes, send texts (0.2.2) | MIT |
 | `lora_mesh_examples/` | meshcore_py's examples rewritten in Erlang and LFE, as MQTT clients of lora_mesh | MIT |
-| `meshtastic_examples/` | Meshtastic-Python-Examples rewritten in Erlang and LFE, as clients of lora_mesh over MQTT (the rest wait for lora_mesh 0.4) | GPL-3.0 |
+| `meshtastic_examples/` | Meshtastic-Python-Examples rewritten in Erlang and LFE, as clients of lora_mesh over MQTT (16 examples; the rest wait for lora_mesh 0.4.1 and 0.4.2) | GPL-3.0 |
 | `lora_demo.sh` | tmux demo: server, bot, manual send and MQTT in four panes | MIT |
 
 The server and the client only talk over MQTT, so the client contains no GPL code:
@@ -23,6 +23,11 @@ Node ids: `!0a0b0c0d` for Meshtastic, `@a1a2a3a4a5a6` for MeshCore.
 
 Since 0.3.2 every message also says which repeaters (MeshCore) or which last router (Meshtastic)
 it came through, and every MeshCore node how each bridge reaches it: see `lora_mesh/PATHS.md`.
+
+Since 0.4.0 lora_mesh also publishes every packet (`mesh/packet/<from>`), what each bridge's radio
+said when it connected (`mesh/bridge/<id>/info`), whether each bridge is connected
+(`mesh/bridge/<id>/status`) and whether lora_mesh itself is up (`mesh/status`). Secrets such as
+channel keys are left out unless lora_mesh's config says `{show_secrets, true}`.
 
 ## How the demo is laid out
 
@@ -94,4 +99,4 @@ cd lora_mesh_client && . .venv/bin/activate && pip install pytest && python -m p
 - `lora_mesh/PATHS.md`: repeater paths, Meshtastic relays and routes (0.3.2)
 - `lora_mesh_client/README.md`: the Python API and examples
 - `lora_mesh_examples/README.md`: the Erlang and LFE examples (`lme contacts`, `lme chat --lfe`, ...)
-- `meshtastic_examples/README.md`: the Meshtastic examples through lora_mesh (`mte nodedb --lfe`, `mte dm -d School`, ...), and what waits for lora_mesh 0.4
+- `meshtastic_examples/README.md`: the Meshtastic examples through lora_mesh (`mte nodedb --lfe`, `mte dm -d School`, ...), and what waits for lora_mesh 0.4.1 and 0.4.2
