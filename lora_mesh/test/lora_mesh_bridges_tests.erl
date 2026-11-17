@@ -31,9 +31,28 @@ two_bridges() ->
                  Rx),
     receive {uplink, _} -> error(published_twice) after 500 -> ok end,
 
-    {ok, Node} = lora_mesh_registry:lookup(From),
+    %% the registry is updated by a cast: wait for it, do not just look
+    Node = wait_node(From,
+                     fun(N) -> lists:sort(maps:keys(N#mesh_node.heard_by)) =:= [hill, home] end),
     ?assertEqual(<<"Hill top">>, Node#mesh_node.long_name),
-    ?assertEqual([hill, home], lists:sort(maps:keys(Node#mesh_node.heard_by))),
     ?assertEqual([hill, home], lora_mesh_node:bridges()),
 
     lora_mesh_fake_node:stop([A, B, Router, Reg, Scope]).
+
+%% the node once Pred holds for it (the registry may be a moment behind)
+wait_node(Num, Pred) ->
+    wait_node(Num, Pred, 50).
+
+wait_node(Num, _Pred, 0) ->
+    error({timeout, lora_mesh_registry:lookup(Num)});
+wait_node(Num, Pred, N) ->
+    case lora_mesh_registry:lookup(Num) of
+        {ok, Node} ->
+            case Pred(Node) of
+                true -> Node;
+                false -> timer:sleep(100), wait_node(Num, Pred, N - 1)
+            end;
+        not_found ->
+            timer:sleep(100),
+            wait_node(Num, Pred, N - 1)
+    end.

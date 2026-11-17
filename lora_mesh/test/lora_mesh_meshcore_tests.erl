@@ -254,7 +254,8 @@ tcp_bridge() ->
                           bridges = [field],
                           rxq = #mesh_rxq{rx_snr = 6.25, hop_start = 2, hop_limit = 0}},
                  Dm),
-    {ok, #mesh_node{heard_by = #{field := _}}} = lora_mesh_registry:lookup(?ALICE_NUM),
+    %% the registry is updated by a cast: wait for it, do not just look
+    wait_node(?ALICE_NUM, fun(N) -> maps:is_key(field, N#mesh_node.heard_by) end),
 
     %% two messages queued before the bridge syncs: both come out, in order
     ok = lora_mesh_fake_companion:receive_channel(Fake, 0, <<"Bob">>, <<"one">>,
@@ -355,8 +356,8 @@ two_bridges() ->
                           rxq = #mesh_rxq{rx_snr = 9.5}},
                  Rx),
     receive {uplink, _} -> error(published_twice) after 500 -> ok end,
-    {ok, Node} = lora_mesh_registry:lookup(?BOB_NUM),
-    ?assertEqual([barn, hill], lists:sort(maps:keys(Node#mesh_node.heard_by))),
+    wait_node(?BOB_NUM,
+              fun(N) -> lists:sort(maps:keys(N#mesh_node.heard_by)) =:= [barn, hill] end),
 
     lora_mesh_fake_node:stop([A, B]),
     [lora_mesh_fake_companion:stop(F) || F <- [FakeA, FakeB]],

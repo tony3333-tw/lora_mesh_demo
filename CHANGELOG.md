@@ -2,6 +2,25 @@
 
 What changed in each tagged version of this repository. The newest is first.
 
+## 0.4.1 — 2026-11-17
+
+### Fixed
+
+- lora_mesh's tests could fail on slower machines (e.g. a Raspberry Pi), usually with 10
+  failures starting at `lora_mesh_meshcore_tests:tcp_bridge/0`. Three tests read the node
+  registry right after an uplink, but the registry is updated by a cast. They now wait for
+  the node (`wait_node/2`) in `lora_mesh_meshcore_tests` and `lora_mesh_bridges_tests`.
+  lora_mesh itself is unchanged (still 0.4.0).
+
+### Notes
+
+- The plan moves up one step: requests through lora_mesh (`traceroute`, `request`, `send`,
+  `foxhunt`, the ACK for `dm`) are now 0.4.2, and admin (off by default) is 0.4.3.
+
+### Tests
+
+- lora_mesh: 71 eunit tests. Run 5 times in a row on a Raspberry Pi 4.
+
 ## 0.4.0 — 2026-11-05
 
 ### Added
@@ -32,6 +51,14 @@ What changed in each tagged version of this repository. The newest is first.
 - lora_mesh: 71 eunit tests, 7 of them new (`cd lora_mesh && rebar3 eunit`).
 - meshtastic_examples: 8 eunit tests. Every example was run against lora_mesh's Meshtastic
   demo in both languages, and `watchdog` through a lora_mesh crash and restart.
+
+### Known issue
+
+- `rebar3 eunit` in `lora_mesh` can fail on slower machines (e.g. a Raspberry Pi), usually
+  with 10 failures starting at `lora_mesh_meshcore_tests:tcp_bridge/0`. It's a timing race in
+  the tests, not in lora_mesh. Fixed in 0.4.1.
+
+
 
 ## 0.3.4 — 2026-11-05
 
